@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>home-kai — гайд по своей оверлей-сети</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d21; --muted: #5c6570; --accent: #2563eb;
+    --card: #f5f7fa; --border: #dde3ea; --code-bg: #f0f3f7; --ok: #15803d; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --fg: #e6e9ec; --muted: #98a2ad; --accent: #7aa2ff;
+      --card: #1c2126; --border: #2b323a; --code-bg: #1f252b; --ok: #4ade80; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 .4rem; }
+  h2 { font-size: 1.35rem; margin: 2.8rem 0 .8rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 1.8rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  .lead { color: var(--muted); font-size: 1.05rem; margin-bottom: 2rem; }
+  a { color: var(--accent); }
+  code {
+    font: .875em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 4px; padding: .1em .35em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
+  th, td { text-align: left; padding: .45rem .7rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .note, .warn {
+    border-left: 3px solid var(--accent); background: var(--card);
+    padding: .7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0;
+  }
+  .warn { border-left-color: var(--warn); }
+  .diagram { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; overflow-x: auto; }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .svg-label { font: 13px -apple-system, sans-serif; fill: var(--fg); }
+  .svg-muted { font: 11px -apple-system, sans-serif; fill: var(--muted); }
+  .svg-box { fill: var(--bg); stroke: var(--border); rx: 8; }
+  .svg-hub { fill: var(--bg); stroke: var(--accent); stroke-width: 1.5; rx: 8; }
+  .svg-line { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+  .svg-ctl  { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+  .kbd { color: var(--muted); font-size: .85rem; }
+  ol li, ul li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>home-kai</h1>
+<p class="lead">Своя оверлей-сеть в духе Tailscale: все машины доступны по адресам <code>100.87.x.x</code>,
+при этом ни на одной из них не открыт ни один входящий порт. Data plane — WireGuard,
+control plane — свой координатор на Go.</p>
+
+<h2 id="how">Как это работает</h2>
+
+<div class="diagram">
+<svg viewBox="0 0 640 320" role="img" aria-label="Схема сети home-kai">
+  <!-- coordinator -->
+  <rect class="svg-box" x="230" y="16" width="180" height="58"/>
+  <text class="svg-label" x="320" y="40" text-anchor="middle">kai-coordinator</text>
+  <text class="svg-muted" x="320" y="58" text-anchor="middle">VPS · TCP 8443 · netmap</text>
+  <!-- hub -->
+  <rect class="svg-hub" x="230" y="130" width="180" height="58"/>
+  <text class="svg-label" x="320" y="154" text-anchor="middle">hub (kai-agent)</text>
+  <text class="svg-muted" x="320" y="172" text-anchor="middle">VPS · UDP 51820 · 100.87.0.1</text>
+  <!-- spokes -->
+  <rect class="svg-box" x="30" y="248" width="150" height="56"/>
+  <text class="svg-label" x="105" y="271" text-anchor="middle">Mac</text>
+  <text class="svg-muted" x="105" y="289" text-anchor="middle">kai-agent · 100.87.0.2</text>
+  <rect class="svg-box" x="245" y="248" width="150" height="56"/>
+  <text class="svg-label" x="320" y="271" text-anchor="middle">домашний сервер</text>
+  <text class="svg-muted" x="320" y="289" text-anchor="middle">kai-agent · за NAT</text>
+  <rect class="svg-box" x="460" y="248" width="150" height="56"/>
+  <text class="svg-label" x="535" y="271" text-anchor="middle">iPhone / роутер</text>
+  <text class="svg-muted" x="535" y="289" text-anchor="middle">WireGuard-app (QR)</text>
+  <!-- data plane lines -->
+  <path class="svg-line" d="M105 248 C 105 210, 230 185, 250 188"/>
+  <path class="svg-line" d="M320 248 L 320 188"/>
+  <path class="svg-line" d="M535 248 C 535 210, 410 185, 390 188"/>
+  <!-- control plane lines -->
+  <path class="svg-ctl" d="M320 130 L 320 74"/>
+  <path class="svg-ctl" d="M105 248 C 60 140, 140 60, 230 45"/>
+  <path class="svg-ctl" d="M320 248 C 430 230, 445 100, 410 60"/>
+  <text class="svg-muted" x="88" y="120">HTTPS: enroll,</text>
+  <text class="svg-muted" x="88" y="134">netmap (long-poll)</text>
+  <text class="svg-muted" x="440" y="225">WireGuard (UDP,</text>
+  <text class="svg-muted" x="440" y="239">только исходящий)</text>
+</svg>
+</div>
+
+<ol>
+  <li><b>Координатор</b> — единственный «мозг»: хранит публичные ключи узлов, выдаёт оверлей-адреса
+      и раздаёт каждому узлу его <b>netmap</b> — полный список WireGuard-пиров, которые нужно установить.</li>
+  <li><b>Агент</b> на каждом узле держит WireGuard-интерфейс (<code>kai0</code> на Linux, <code>utunN</code> на macOS)
+      и синхронизирует пиров через HTTP long-poll. Все соединения агента — <b>исходящие</b>:
+      HTTPS к координатору и UDP к хабу.</li>
+  <li><b>Хаб</b> (VPS с белым IP) — WireGuard-релей: узлы за NAT дозваниваются до него,
+      он форвардит пакеты между ними (<code>ip_forward</code>). Только у него открыты порты наружу.</li>
+</ol>
+
+<p>Маршрутизация — чистый WireGuard cryptokey routing: у спока один пир (хаб) с
+<code>AllowedIPs = 100.87.0.0/16</code>, у хаба — каждый узел по <code>/32</code>.
+<code>PersistentKeepalive = 25</code> держит NAT-мэппинги живыми.</p>
+
+<div class="note">
+<b>Координатор может лежать — сеть работает.</b> Netmap кэшируется в state-файле агента
+и применяется при старте; туннели живут независимо от control plane. Координатор нужен
+только чтобы добавлять/удалять узлы.
+</div>
+
+<h3>Безопасность</h3>
+<ul>
+  <li>Приватный ключ WireGuard генерируется на узле и <b>никогда его не покидает</b> (исключение — static peers, см. ниже).</li>
+  <li>Enrollment — по <b>одноразовому токену</b> с TTL (по умолчанию 1 час); после регистрации узел
+      аутентифицируется собственным секретом (на сервере хранится только hash).</li>
+  <li>TLS координатора — self-signed сертификат, агент <b>пинит его sha256-отпечаток</b>
+      (передаётся вместе с токеном). Не нужны ни домен, ни Let&rsquo;s Encrypt, ни доверие системным CA;
+      смена IP сервера ничего не ломает.</li>
+</ul>
+
+<h2 id="setup">Установка с нуля (VPS)</h2>
+
+<pre><code># 1. бинари и юниты (с рабочей машины)
+just provision-vps && just deploy-vps
+
+# 2. на VPS: админ-токен и конфиг
+kai-coordinator gen-admin-token > /root/kai-admin-token.txt && chmod 600 /root/kai-admin-token.txt
+cat > /etc/kai/coordinator.toml <<'EOF'
+listen           = ":8443"
+public_url       = "https://vpn.example.com:8443"
+hub_endpoint     = "vpn.example.com:51820"
+overlay_cidr     = "100.87.0.0/16"
+data_dir         = "/var/lib/kai"
+admin_token_hash = "<hash из gen-admin-token>"
+EOF
+useradd -r -s /usr/sbin/nologin kai
+chown root:kai /etc/kai/coordinator.toml && chmod 640 /etc/kai/coordinator.toml
+systemctl enable --now kai-coordinator
+journalctl -u kai-coordinator | grep fingerprint   # отпечаток — понадобится всем агентам
+
+# 3. хаб — это тоже агент на том же VPS
+kai token create --name vps-hub          # env: KAI_URL / KAI_ADMIN_TOKEN / KAI_FINGERPRINT
+kai-agent up --coordinator https://127.0.0.1:8443 --token ... --fingerprint ... --hub
+# ^ после первого enroll достаточно: systemctl enable --now kai-agent</code></pre>
+
+<h2 id="join">Подключение устройств</h2>
+
+<h3>Linux-сервер или Mac</h3>
+<ol>
+  <li>Создай токен: <code>kai token create --name home-server</code> — команда сразу напечатает готовую join-строку.</li>
+  <li>На устройстве (root обязателен — агент управляет сетевым интерфейсом):
+<pre><code>sudo kai-agent up \
+  --coordinator https://vpn.example.com:8443 \
+  --token &lt;одноразовый токен&gt; \
+  --fingerprint &lt;отпечаток&gt;</code></pre></li>
+  <li>Постоянный запуск: Linux — <code>deploy/systemd/kai-agent.service</code>,
+      macOS — <code>deploy/launchd/dev.kai.agent.plist</code> (в <code>/Library/LaunchDaemons</code>).
+      Повторный <code>kai-agent up</code> без флагов использует сохранённый state
+      (<code>/var/lib/kai-agent/state.json</code>).</li>
+</ol>
+
+<h3>iPhone / Android / роутер (static peer)</h3>
+<p>Свой агент туда не поставить, поэтому используется официальное WireGuard-приложение:</p>
+<pre><code>kai peer add-static iphone          # напечатает конфиг + QR прямо в терминал
+kai peer add-static iphone --png iphone.png   # и/или в PNG</code></pre>
+<p>Сканируешь QR в приложении WireGuard — устройство получает адрес и ходит во всю сеть через хаб.
+Для роутера/NAS используй сам <code>.conf</code>.</p>
+<div class="warn">Для static peers ключевая пара генерируется на сервере (приватный ключ обязан попасть
+в конфиг/QR) — это единственное место, где приватник существует вне устройства. Такие пиры
+всегда ходят через хаб.</div>
+
+<h2 id="admin">Администрирование</h2>
+
+<h3>Web UI</h3>
+<p>Панель управления встроена в координатор: <code>https://vpn.example.com:8444/ui</code>.
+Вход по admin-токену (<code>/root/kai-admin-token.txt</code> на VPS) — токен обменивается на
+HttpOnly session-cookie на 30 дней и в браузере не хранится; сессии живут в памяти
+координатора, его рестарт разлогинивает. Панель показывает устройства с
+online-статусом (теги, кнопка одобрения, включение анонсированных подсетей), static peers
+(конфиг/QR, тумблер полного туннеля), публикации сервисов, ACL-политики, индикатор
+network lock и журнал последних событий; умеет создавать enroll-токены (готовая
+join-команда) и удалять узлы. Таблицы перерисовываются только при изменении данных —
+клики и открытые модалки не сбиваются.</p>
+<p>На порту 8444 — Let's Encrypt сертификат, выпущенный прямо на IP-адрес
+(профиль <code>shortlived</code>, 160 часов): браузер доверяет ему без предупреждений.
+certbot на VPS продлевает серт по systemd-таймеру, deploy-hook копирует файлы в
+<code>/etc/kai/ui-tls/</code>, а координатор перечитывает их с диска без рестарта.
+Агенты по-прежнему ходят на 8443 с self-signed сертификатом и пиннингом отпечатка —
+LE тут не годится: его отпечаток менялся бы каждые 6 дней. <code>:8443/ui</code>
+работает как fallback (с предупреждением браузера).</p>
+
+<h3>CLI</h3>
+<p><code>kai status</code> и <code>kai ping</code> работают на любом узле без токенов — через unix socket
+локального агента. Остальным командам нужно окружение:</p>
+<pre><code>export KAI_URL=https://vpn.example.com:8443
+export KAI_ADMIN_TOKEN=...     # /root/kai-admin-token.txt на VPS
+export KAI_FINGERPRINT=...     # из лога координатора</code></pre>
+
+<table>
+<tr><th>Команда</th><th>Что делает</th></tr>
+<tr><td><code>kai status</code></td><td>пиры глазами узла: путь (<code>direct</code>/<code>relay</code>/<code>hub</code>), endpoint, handshake, rx/tx</td></tr>
+<tr><td><code>kai ping &lt;имя|ip&gt;</code></td><td>резолвит имя устройства, показывает путь, запускает ping</td></tr>
+<tr><td><code>kai token create --name X [--ttl N]</code></td><td>одноразовый enroll-токен + готовая join-команда</td></tr>
+<tr><td><code>kai node list</code></td><td>узлы: id, роль, IP, DNS-имя, last&nbsp;seen</td></tr>
+<tr><td><code>kai node delete &lt;id&gt;</code></td><td>выгоняет узел из сети (пир исчезает у хаба ≤&nbsp;минуты)</td></tr>
+<tr><td><code>kai node routes &lt;id&gt; --enable CIDR,CIDR</code></td><td>включает подсети, анонсированные узлом (subnet router)</td></tr>
+<tr><td><code>kai peer add-static &lt;имя&gt; [--full]</code></td><td>static peer: конфиг + QR; <code>--full</code> — полный туннель (exit node)</td></tr>
+<tr><td><code>kai node approve &lt;id&gt;</code></td><td>одобрить узел (если включён require_approval)</td></tr>
+<tr><td><code>kai node tag &lt;id&gt; --tags a,b</code></td><td>задать теги узла для ACL-политик</td></tr>
+<tr><td><code>kai policy list / add / delete</code></td><td>политики доступа между группами</td></tr>
+<tr><td><code>kai events [--limit N]</code></td><td>журнал последних действий</td></tr>
+<tr><td><code>kai lock init / sign / status / disable</code></td><td>network lock: подпись привязок пиров админским ключом</td></tr>
+<tr><td><code>kai-agent status</code></td><td>на узле: id, IP, версия netmap, число пиров (по state-файлу)</td></tr>
+<tr><td><code>kai-agent rekey</code></td><td>офлайн-ротация WG-ключа (агент должен быть остановлен)</td></tr>
+<tr><td><code>kai-coordinator gen-admin-token</code></td><td>новый админ-токен + hash для конфига</td></tr>
+</table>
+
+<h3>Прямые p2p-соединения</h3>
+<p>Споки пробуют соединиться друг с другом напрямую, минуя хаб. Кандидаты — LAN-адреса
+(агент сам сообщает) и публичные endpoint&rsquo;ы, которые хаб наблюдает по keepalive.
+Пробинг не рвёт связь: пир ставится с пустыми AllowedIPs (handshake ходит, трафик — нет),
+и только подтверждённый путь получает <code>/32</code>, который перебивает <code>/16</code> хаба.
+Стух handshake &gt;3&nbsp;минут — мгновенный откат на relay и повторная проба позже.
+Смотреть: <code>kai status</code> (колонка PATH).</p>
+
+<h3>Subnet router: доступ к чужой LAN</h3>
+<pre><code>sudo kai-agent up --advertise-routes 192.168.1.0/24   # на узле в этой LAN
+kai node routes &lt;node_id&gt; --enable 192.168.1.0/24     # разрешение админа (или чекбокс в UI)</code></pre>
+<p>После включения все устройства достают эту подсеть через оверлей (телефонам с готовым
+конфигом надо перегенерировать conf). Узел-роутер сам включает форвардинг и маскарадит
+трафик в LAN. Если подсеть совпадает с локальной сетью другого узла (типично: docker-бриджи
+<code>172.17–19.0.0/16</code>) — тот узел пропустит маршрут и напишет об этом в лог, его
+локальная сеть не пострадает.</p>
+
+<h3>Публикации (funnel)</h3>
+<p>Кнопка «Опубликовать сервис» в UI: публичный порт VPS → сервис в оверлее
+(<code>nas.kai:8096</code> или <code>100.87.0.4:8096</code>). Хаб просто форвардит TCP —
+TLS и аутентификация остаются на самом сервисе. Порт открыт всему интернету.</p>
+
+<h3>ACL-политики (сегментация)</h3>
+<p>По умолчанию оверлей плоский — все видят всех. Чтобы ограничить доступ, назначь узлам
+<b>теги</b> (<code>kai node tag &lt;id&gt; --tags web</code> или кнопка «теги» в панели) и заведи
+<b>политику</b>: <code>kai policy add имя --from admin --to web --proto tcp --ports 22,443</code>.
+Пустой <code>--from</code>/<code>--to</code> означает «любой».</p>
+<p>Как только появляется первая включённая политика, сеть переключается в режим
+<b>«запрещено всё, кроме явно разрешённого»</b>. Координатор вычисляет для каждого узла список
+разрешённого входящего трафика и раздаёт в netmap; Linux-агент применяет его iptables-цепочкой
+<code>KAI-FILTER</code> на входе интерфейса <code>kai0</code> (физический SSH и управление не
+затрагиваются — они не идут через оверлей). macOS-узлы enforcement не делают (нет iptables) —
+предупреждают в логе. Трафик <i>к</i> static peers фильтруется на получателе, если это наш агент.</p>
+<div class="warn">Фильтр контролирует и ICMP: если в политике только tcp/443, пинг между этими
+узлами тоже не пройдёт — это ожидаемо. Заведи политику с протоколом «любой» или icmp, если нужен ping.</div>
+
+<h3>Одобрение узлов (peer approval)</h3>
+<p>С <code>require_approval = true</code> в конфиге новый узел после enroll висит в состоянии
+«ожидает»: он никого не видит и невидим остальным, пока админ не нажмёт «одобрить» в панели или
+не выполнит <code>kai node approve &lt;id&gt;</code>. Хаб доверяется автоматически.</p>
+
+<h3>Журнал событий</h3>
+<p>Ключевые действия (подключение/одобрение/удаление узлов, теги, политики, публикации, lock,
+вход в панель) пишутся в журнал — карточка «Журнал» в UI, <code>kai events</code> или
+<code>GET /v1/admin/events</code>. Если задан <code>event_webhook</code>, на каждое событие
+уходит JSON-POST — можно завести мост в SIEM или чат.</p>
+
+<h3>Network lock</h3>
+<p>Защита от компрометации координатора: <code>kai lock init</code> создаёт ed25519-ключ
+на админской машине (<code>~/.config/kai/lock.key</code> — <b>забэкапь</b>, второй копии нет),
+<code>kai lock sign</code> подписывает привязку (WG-ключ, overlay-IP) каждого устройства.
+Агенты пинят публичный ключ и молча отбрасывают неподписанных пиров — координатор,
+даже взломанный, не может добавить в сеть свой узел. Каждое новое устройство (и каждая
+ротация ключа) требует <code>kai lock sign</code> — до этого узел не увидит сеть.</p>
+
+<h3>Ротация ключей</h3>
+<p><code>--rekey-days 30</code> у агента — авторотация: новый ключ регистрируется у координатора
+и подменяется на живом интерфейсе, пики применяют новый netmap за секунды. Прерванная ротация
+самолечится при старте (агент ре-ассертит свой ключ). При включённом lock авторотация
+отключена — ротируй вручную и подписывай.</p>
+
+<h3>DNS-имена устройств (опционально)</h3>
+<p>Если в конфиге координатора включена секция <code>[dns]</code> (провайдер Timeweb),
+каждое новое устройство при регистрации получает публичную A-запись
+<code>{16&nbsp;случайных&nbsp;символов}.{домен}</code> → его оверлей-IP. Запись резолвится откуда угодно,
+но IP из <code>100.87.0.0/16</code> достижим только изнутри сети.</p>
+<div class="warn">Некоторые домашние роутеры с DNS rebind protection режут ответы с приватными/CGNAT
+адресами — если имя не резолвится дома, добавь исключение для своего домена в настройках роутера.</div>
+
+<h2 id="debug">Диагностика</h2>
+
+<table>
+<tr><th>Симптом</th><th>Причина и что делать</th></tr>
+<tr>
+  <td>Первый ping после подключения теряется</td>
+  <td>Норма: первый пакет инициирует WireGuard-handshake.</td>
+</tr>
+<tr>
+  <td>Mac не отвечает на ping по оверлею, хотя сам всех пингует</td>
+  <td>Stealth mode файрвола macOS молча жрёт ICMP. Туннель жив — проверяй TCP-ом
+      (<code>nc</code>, <code>ssh</code>, <code>curl</code>).</td>
+</tr>
+<tr>
+  <td>SSH подключается и виснет; мелкие пинги ходят, большие пакеты — нет</td>
+  <td>MTU. По умолчанию 1420; за PPPoE/LTE поставь 1400/1380 (поле <code>mtu</code> в state-файле агента, перезапусти агент).</td>
+</tr>
+<tr>
+  <td>Узел «пропал» из сети</td>
+  <td><code>kai node list</code> — смотри last&nbsp;seen. На узле: <code>kai-agent status</code>, лог агента.
+      Агент переподключается сам с экспоненциальным backoff.</td>
+</tr>
+<tr>
+  <td>Координатор упал</td>
+  <td>Существующие туннели работают. Новые узлы добавить нельзя до восстановления.
+      <code>systemctl restart kai-coordinator</code> на VPS.</td>
+</tr>
+<tr>
+  <td>У VPS сменился публичный IP</td>
+  <td>Агенты получат новый endpoint хаба из netmap (адрес координатора в их конфиге поправь на новый).
+      Конфиги static peers содержат IP статически — перегенерируй (<code>kai peer add-static</code>)
+      или используй DNS-имя в <code>hub_endpoint</code>.</td>
+</tr>
+<tr>
+  <td>Ничего не работает вообще</td>
+  <td>Проверь cloud-firewall провайдера: должны быть открыты TCP&nbsp;8443 и UDP&nbsp;51820 на VPS.</td>
+</tr>
+</table>
+
+<h2 id="protocol">Под капотом: протокол</h2>
+<ol>
+  <li><b>Enroll</b>: агент генерирует ключи → <code>POST /v1/enroll</code> с одноразовым токеном
+      и своим публичным ключом → координатор выдаёт <code>node_id</code>, персональный секрет,
+      оверлей-IP → агент сохраняет state (<code>0600</code>).</li>
+  <li><b>Sync</b>: <code>GET /v1/netmap?since=N</code> — сервер держит запрос до 55&nbsp;секунд;
+      отвечает сразу, как только версия netmap вырастет (кто-то добавился/удалился).
+      Netmap всегда полный, применение идемпотентно (<code>ReplacePeers</code>).</li>
+  <li><b>Status</b>: раз в минуту (и сразу после старта) агент шлёт heartbeat: LAN-адреса,
+      анонсируемые подсети; хаб дополнительно сообщает наблюдаемые публичные endpoint&rsquo;ы
+      пиров — из них координатор собирает кандидатов для p2p-пробинга.</li>
+  <li><b>Rekey</b>: <code>POST /v1/rekey</code> — идемпотентная замена WG-ключа узла.</li>
+</ol>
+
+<h2 id="roadmap">Roadmap</h2>
+<ul>
+  <li><b>M1 — hub-and-spoke</b>: готово, проверено (включая работу data plane при выключенном координаторе).</li>
+  <li><b>M2 — static peers + QR</b>: код готов; осталось проверить на реальном iPhone.</li>
+  <li><b>M3 — прямые соединения</b>: готово (prober с бесшовным fallback на хаб); проверено на паре macOS ↔ Linux-узел.</li>
+  <li><b>M4 — качество жизни</b>: готово — /etc/hosts-имена, <code>kai status/ping</code>, subnet router,
+      exit node, публикации, ротация ключей, network lock, <code>/metrics</code>.</li>
+  <li><b>M5 — управление доступом</b>: готово — ACL-политики с тегами, одобрение узлов (peer approval),
+      журнал событий с webhook.</li>
+  <li><b>Осталось</b>: launchd/автозапуск на Mac, <code>kai netcheck</code> (классификация NAT),
+      публичные DNS-имена через Timeweb (код готов, ждёт домена).</li>
+</ul>
+
+<p class="kbd">home-kai · pet-проект · Go + WireGuard · план: <code>plans/wondrous-strolling-finch.md</code></p>
+
+</main>
+</body>
+</html>

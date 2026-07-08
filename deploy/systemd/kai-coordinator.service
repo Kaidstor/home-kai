@@ -1,0 +1,20 @@
+[Unit]
+Description=kai overlay network coordinator (control plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kai-coordinator -config /etc/kai/coordinator.toml
+# useradd -r -s /usr/sbin/nologin kai; конфиг: root:kai 640
+User=kai
+Group=kai
+StateDirectory=kai
+# data_dir в coordinator.toml должен указывать на /var/lib/kai
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

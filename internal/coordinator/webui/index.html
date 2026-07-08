@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kai — панель управления</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='%232563eb'/><circle cx='50' cy='50' r='16' fill='white'/></svg>">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #6b7280;
+    --border: #e5e7eb; --accent: #2563eb; --accent-text: #ffffff;
+    --danger: #dc2626; --ok: #16a34a; --code-bg: #f0f1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --text: #e6e8eb; --muted: #8b93a1;
+      --border: #2a2f3a; --accent: #3b82f6; --accent-text: #ffffff;
+      --danger: #ef4444; --ok: #22c55e; --code-bg: #0c0e12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header .spacer { flex: 1; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-bottom: 20px;
+  }
+  .card h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .count { color: var(--muted); font-weight: normal; font-size: 14px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .dot.on  { background: var(--ok); }
+  .dot.off { background: var(--muted); opacity: .5; }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge.hub { border-color: var(--accent); color: var(--accent); }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger { color: var(--danger); }
+  button.danger:hover { border-color: var(--danger); }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.45; margin: 10px 0;
+  }
+  dialog {
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; max-width: min(560px, 92vw); width: 100%;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin: 0 0 12px; font-size: 16px; }
+  dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  input[type=text], input[type=password] {
+    font: inherit; width: 100%; padding: 8px 10px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  .qr { display: block; margin: 12px auto; border-radius: 8px; background: #fff; padding: 8px; max-width: 100%; }
+  #login { max-width: 380px; margin: 12vh auto 0; }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .empty { color: var(--muted); padding: 14px 4px; font-size: 14px; }
+  .copyable { cursor: pointer; border-bottom: 1px dashed var(--border); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div id="login" class="card" hidden>
+    <h2>kai — вход</h2>
+    <p class="muted">Админ-токен координатора (на VPS: <span class="mono">/root/kai-admin-token.txt</span>).</p>
+    <input id="loginToken" type="password" placeholder="admin token" autocomplete="off">
+    <div class="err" id="loginErr"></div>
+    <div style="margin-top:10px"><button class="primary" id="loginBtn">Войти</button></div>
+  </div>
+
+  <div id="main" hidden>
+    <header>
+      <h1>kai — панель управления</h1>
+      <span class="badge" id="lockBadge" hidden></span>
+      <span class="muted" id="updated"></span>
+      <span class="spacer"></span>
+      <button id="logoutBtn" class="small">Выйти</button>
+    </header>
+
+    <div class="actions">
+      <button class="primary" id="newDeviceBtn">Подключить устройство</button>
+      <button id="newPeerBtn">Добавить телефон / роутер</button>
+      <button id="newPubBtn">Опубликовать сервис</button>
+      <button id="newPolicyBtn">Добавить политику</button>
+    </div>
+
+    <div class="card">
+      <h2>Устройства <span class="count" id="nodeCount"></span></h2>
+      <div class="tablewrap"><table id="nodesTable" hidden>
+        <thead><tr>
+          <th>Статус</th><th>Имя</th><th>Роль</th><th>Overlay IP</th><th>Теги</th><th>Подсети</th><th>ОС</th><th>Был в сети</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="nodesEmpty" hidden>Пока нет устройств.</div>
+    </div>
+
+    <div class="card">
+      <h2>Политики доступа <span class="count" id="policyCount"></span></h2>
+      <p class="muted" style="margin-top:-6px">Как только есть хоть одна включённая политика — оверлей работает по принципу «запрещено всё, кроме явно разрешённого» (фильтр применяется на Linux-узлах).</p>
+      <div class="tablewrap"><table id="policiesTable" hidden>
+        <thead><tr>
+          <th>Имя</th><th>Откуда</th><th>Куда</th><th>Протокол</th><th>Порты</th><th>Вкл.</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="policiesEmpty" hidden>Политик нет — сеть открыта (все видят всех).</div>
+    </div>
+
+    <div class="card">
+      <h2>Публикации <span class="count" id="pubCount"></span></h2>
+      <p class="muted" style="margin-top:-6px">TCP-проброс с публичного порта VPS на сервис в оверлее — доступен всему интернету, позаботься об аутентификации самого сервиса.</p>
+      <div class="tablewrap"><table id="pubsTable" hidden>
+        <thead><tr>
+          <th>Имя</th><th>Публичный адрес</th><th>Цель в оверлее</th><th>Создана</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="pubsEmpty" hidden>Пока нет публикаций.</div>
+    </div>
+
+    <div class="card">
+      <h2>Static peers <span class="count" id="peerCount"></span></h2>
+      <p class="muted" style="margin-top:-6px">iPhone / Android / роутер: официальный WireGuard-клиент, всегда через хаб.</p>
+      <div class="tablewrap"><table id="peersTable" hidden>
+        <thead><tr>
+          <th>Имя</th><th>Overlay IP</th><th>DNS</th><th>Создан</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="peersEmpty" hidden>Пока нет static peers.</div>
+    </div>
+
+    <div class="card">
+      <h2>Журнал <span class="count" id="eventCount"></span></h2>
+      <div class="tablewrap"><table id="eventsTable" hidden>
+        <thead><tr><th>Время</th><th>Событие</th><th>Кто</th><th>Описание</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="eventsEmpty" hidden>Событий пока нет.</div>
+    </div>
+  </div>
+</div>
+
+<dialog id="askDialog">
+  <h3 id="askTitle"></h3>
+  <label id="askLabel" for="askInput"></label>
+  <input id="askInput" type="text" autocomplete="off">
+  <div class="err" id="askErr"></div>
+  <div class="row">
+    <button id="askCancel">Отмена</button>
+    <button class="primary" id="askOk">Создать</button>
+  </div>
+</dialog>
+
+<dialog id="tokenDialog">
+  <h3>Подключение устройства</h3>
+  <p class="muted">Выполни на новом устройстве (Linux / macOS) от root. Токен одноразовый, действует 1 час.</p>
+  <pre id="joinCmd"></pre>
+  <div class="row">
+    <button id="joinCopy">Скопировать команду</button>
+    <button class="primary" id="tokenClose">Готово</button>
+  </div>
+</dialog>
+
+<dialog id="confDialog">
+  <h3 id="confTitle"></h3>
+  <p class="muted">Отсканируй QR в официальном приложении WireGuard или импортируй .conf.</p>
+  <label style="display:flex;align-items:center;gap:8px;margin:0 0 4px;cursor:pointer">
+    <input type="checkbox" id="confFull">
+    Полный туннель — ВЕСЬ трафик устройства через VPS (exit node)
+  </label>
+  <img class="qr" id="confQR" alt="QR-код конфига WireGuard">
+  <pre id="confText"></pre>
+  <div class="row">
+    <button id="confCopy">Скопировать conf</button>
+    <button id="confDownload">Скачать .conf</button>
+    <button class="primary" id="confClose">Готово</button>
+  </div>
+</dialog>
+
+<dialog id="policyDialog">
+  <h3>Новая политика доступа</h3>
+  <p class="muted">Разрешает трафик от устройств с тегами «Откуда» к устройствам с тегами «Куда». Пусто = любой.</p>
+  <label for="polName">Имя</label>
+  <input id="polName" type="text" placeholder="it → web" autocomplete="off">
+  <label for="polFrom">Откуда (теги через запятую, пусто = любой)</label>
+  <input id="polFrom" type="text" placeholder="it" autocomplete="off">
+  <label for="polTo">Куда (теги через запятую, пусто = любой)</label>
+  <input id="polTo" type="text" placeholder="web" autocomplete="off">
+  <label for="polProto">Протокол</label>
+  <select id="polProto" style="font:inherit;width:100%;padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+    <option value="any">любой</option>
+    <option value="tcp">tcp</option>
+    <option value="udp">udp</option>
+    <option value="icmp">icmp</option>
+  </select>
+  <label for="polPorts">Порты через запятую (только tcp/udp; пусто = все)</label>
+  <input id="polPorts" type="text" placeholder="22, 443" autocomplete="off">
+  <div class="err" id="polErr"></div>
+  <div class="row">
+    <button id="polCancel">Отмена</button>
+    <button class="primary" id="polOk">Создать</button>
+  </div>
+</dialog>
+
+<dialog id="pubDialog">
+  <h3>Опубликовать сервис</h3>
+  <p class="muted">VPS начнёт принимать TCP на публичном порту и пробрасывать в оверлей.</p>
+  <label for="pubName">Имя</label>
+  <input id="pubName" type="text" placeholder="jellyfin" autocomplete="off">
+  <label for="pubPort">Публичный порт VPS</label>
+  <input id="pubPort" type="text" placeholder="8096" autocomplete="off">
+  <label for="pubTarget">Цель: overlay-IP:порт или имя.kai:порт</label>
+  <input id="pubTarget" type="text" placeholder="100.87.0.3:8096" autocomplete="off">
+  <div class="err" id="pubErr"></div>
+  <div class="row">
+    <button id="pubCancel">Отмена</button>
+    <button class="primary" id="pubOk">Опубликовать</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const ONLINE_MS = 150000; // агент трогает координатор минимум раз в ~70 с (long-poll)
+
+let refreshTimer = null;
+localStorage.removeItem('kai_admin_token'); // зачистка ключа из старой версии UI
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+// Аутентификация — HttpOnly session cookie, выданная POST /v1/admin/session.
+// Токен в браузере не хранится. X-Kai-UI обязателен для cookie-запросов (CSRF).
+async function api(method, path, body) {
+  const r = await fetch(path, {
+    method,
+    headers: Object.assign({'X-Kai-UI': '1'},
+      body ? {'Content-Type': 'application/json'} : {}),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) { showLogin('Сессия истекла — войди заново.'); throw new Error('unauthorized'); }
+  if (!r.ok) {
+    let msg = 'HTTP ' + r.status;
+    try { msg = (await r.json()).error || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  if (btn) {
+    const old = btn.textContent;
+    btn.textContent = '✓ скопировано';
+    setTimeout(() => { btn.textContent = old; }, 1200);
+  }
+}
+
+function rel(ts) {
+  const sec = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (sec < 10) return 'только что';
+  if (sec < 60) return Math.floor(sec) + ' с назад';
+  if (sec < 3600) return Math.floor(sec / 60) + ' мин назад';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' ч назад';
+  return Math.floor(sec / 86400) + ' дн назад';
+}
+
+// Подсети: чекбокс на каждый анонсированный маршрут, включённые отмечены.
+// Включение = разрешение админа — узел начнёт роутить подсеть для всей сети.
+function renderRoutes(n) {
+  const adv = n.routes_advertised || [];
+  if (!adv.length) return '<span class="muted">—</span>';
+  const enabled = new Set(n.routes_enabled || []);
+  return adv.map(r => `<label style="display:block;cursor:pointer;font-size:13px" title="Разрешить узлу роутить эту подсеть">
+    <input type="checkbox" data-route-node="${esc(n.node_id)}" value="${esc(r)}" ${enabled.has(r) ? 'checked' : ''}>
+    <span class="mono">${esc(r)}</span></label>`).join('');
+}
+
+function renderNodes(nodes) {
+  const table = $('#nodesTable'), tbody = table.querySelector('tbody');
+  $('#nodeCount').textContent = nodes.length ? '· ' + nodes.length : '';
+  table.hidden = nodes.length === 0;
+  $('#nodesEmpty').hidden = nodes.length !== 0;
+  tbody.innerHTML = nodes.map(n => {
+    const online = Date.now() - new Date(n.last_seen).getTime() < ONLINE_MS;
+    const isHub = n.role === 'hub';
+    const pending = n.approved === false;
+    const tags = (n.tags || []).map(t => `<span class="badge">${esc(t)}</span>`).join(' ') || '<span class="muted">—</span>';
+    const roleCell = pending
+      ? '<span class="badge" style="border-color:var(--accent);color:var(--accent)">ожидает</span>'
+      : `<span class="badge ${isHub ? 'hub' : ''}">${isHub ? 'хаб' : 'узел'}</span>`;
+    const actions = (pending
+        ? `<button class="small primary" data-approve="${esc(n.node_id)}" data-name="${esc(n.hostname)}">одобрить</button> `
+        : `<button class="small" data-tag-node="${esc(n.node_id)}" data-name="${esc(n.hostname)}" data-tags="${esc((n.tags||[]).join(','))}">теги</button> `)
+      + `<button class="small danger" data-del-node="${esc(n.node_id)}" data-name="${esc(n.hostname)}" data-hub="${isHub}">удалить</button>`;
+    return `<tr>
+      <td><span class="dot ${online ? 'on' : 'off'}"></span>${online ? 'online' : 'offline'}</td>
+      <td>${esc(n.hostname)}</td>
+      <td>${roleCell}</td>
+      <td class="mono copyable" data-copy="${esc(n.overlay_ip)}" title="Скопировать">${esc(n.overlay_ip)}</td>
+      <td>${tags}</td>
+      <td>${renderRoutes(n)}</td>
+      <td>${esc(n.os) || '—'}</td>
+      <td title="${esc(n.last_seen)}">${rel(n.last_seen)}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPolicies(pols) {
+  const table = $('#policiesTable'), tbody = table.querySelector('tbody');
+  $('#policyCount').textContent = pols.length ? '· ' + pols.length : '';
+  table.hidden = pols.length === 0;
+  $('#policiesEmpty').hidden = pols.length !== 0;
+  const tagCell = t => (t && t.length) ? t.map(x => `<span class="badge">${esc(x)}</span>`).join(' ') : '<span class="muted">любой</span>';
+  tbody.innerHTML = pols.map(p => `<tr>
+    <td>${esc(p.name)}</td>
+    <td>${tagCell(p.src_tags)}</td>
+    <td>${tagCell(p.dst_tags)}</td>
+    <td>${esc(p.protocol)}</td>
+    <td class="mono">${(p.ports||[]).join(', ') || '<span class="muted">все</span>'}</td>
+    <td>${p.enabled ? '<span class="dot on"></span>да' : '<span class="dot off"></span>нет'}</td>
+    <td><button class="small danger" data-del-policy="${esc(p.id)}" data-name="${esc(p.name)}">удалить</button></td>
+  </tr>`).join('');
+}
+
+function renderEvents(evs) {
+  const table = $('#eventsTable'), tbody = table.querySelector('tbody');
+  $('#eventCount').textContent = evs.length ? '· ' + evs.length : '';
+  table.hidden = evs.length === 0;
+  $('#eventsEmpty').hidden = evs.length !== 0;
+  tbody.innerHTML = evs.map(e => `<tr>
+    <td title="${esc(e.ts)}">${rel(e.ts)}</td>
+    <td class="mono">${esc(e.kind)}</td>
+    <td>${esc(e.actor || '—')}</td>
+    <td>${esc(e.message)}</td>
+  </tr>`).join('');
+}
+
+function renderPubs(pubs) {
+  const table = $('#pubsTable'), tbody = table.querySelector('tbody');
+  $('#pubCount').textContent = pubs.length ? '· ' + pubs.length : '';
+  table.hidden = pubs.length === 0;
+  $('#pubsEmpty').hidden = pubs.length !== 0;
+  tbody.innerHTML = pubs.map(p => `<tr>
+    <td>${esc(p.name)}</td>
+    <td class="mono copyable" data-copy="${location.hostname}:${esc(p.listen_port)}" title="Скопировать">${location.hostname}:${esc(p.listen_port)}</td>
+    <td class="mono">${esc(p.target)}</td>
+    <td title="${esc(p.created_at)}">${rel(p.created_at)}</td>
+    <td><button class="small danger" data-del-pub="${esc(p.id)}" data-name="${esc(p.name)}">удалить</button></td>
+  </tr>`).join('');
+}
+
+function renderLock(lock) {
+  const b = $('#lockBadge');
+  if (!lock || !lock.enabled) { b.hidden = true; return; }
+  b.hidden = false;
+  if (lock.active) {
+    b.textContent = '🔒 lock активен';
+    b.title = 'Привязки пиров подписаны админским ключом';
+  } else {
+    b.textContent = `🔓 lock: ${(lock.pending || []).length} без подписи`;
+    b.title = 'Выполни kai lock sign на админской машине';
+  }
+}
+
+function renderPeers(peers) {
+  const table = $('#peersTable'), tbody = table.querySelector('tbody');
+  $('#peerCount').textContent = peers.length ? '· ' + peers.length : '';
+  table.hidden = peers.length === 0;
+  $('#peersEmpty').hidden = peers.length !== 0;
+  tbody.innerHTML = peers.map(p => `<tr>
+    <td>${esc(p.name)}</td>
+    <td class="mono copyable" data-copy="${esc(p.overlay_ip)}" title="Скопировать">${esc(p.overlay_ip)}</td>
+    <td class="mono">${p.dns_name ? esc(p.dns_name) : '<span class="muted">—</span>'}</td>
+    <td title="${esc(p.created_at)}">${rel(p.created_at)}</td>
+    <td>
+      <button class="small" data-conf="${esc(p.id)}">конфиг / QR</button>
+      <button class="small danger" data-del-peer="${esc(p.id)}" data-name="${esc(p.name)}">удалить</button>
+    </td>
+  </tr>`).join('');
+}
+
+// Перерисовка только при изменении данных: иначе автообновление раз в 15 с
+// сбивает клики и состояние чекбоксов. force=true после мутаций.
+let lastSnapshot = '';
+async function refresh(force) {
+  const [nodes, peers, pubs, lock, policies, events] = await Promise.all([
+    api('GET', '/v1/admin/nodes'),
+    api('GET', '/v1/admin/static-peers'),
+    api('GET', '/v1/admin/publishes'),
+    api('GET', '/v1/admin/lock'),
+    api('GET', '/v1/admin/policies'),
+    api('GET', '/v1/admin/events?limit=50'),
+  ]);
+  $('#updated').textContent = 'обновлено в ' + new Date().toLocaleTimeString();
+  const snapshot = JSON.stringify([nodes, peers, pubs, lock, policies, events]);
+  if (!force && snapshot === lastSnapshot) return;
+  if (!force && document.querySelector('dialog[open]')) return; // не дёргать DOM под модалкой
+  lastSnapshot = snapshot;
+  renderNodes(nodes || []);
+  renderPeers(peers || []);
+  renderPubs(pubs || []);
+  renderLock(lock);
+  renderPolicies(policies || []);
+  renderEvents(events || []);
+}
+
+function showLogin(err) {
+  clearInterval(refreshTimer);
+  $('#main').hidden = true;
+  $('#login').hidden = false;
+  $('#loginErr').textContent = err || '';
+  $('#loginToken').focus();
+}
+
+async function showMain() {
+  $('#login').hidden = true;
+  $('#main').hidden = false;
+  await refresh();
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => refresh().catch(() => {}), 15000);
+}
+
+// --- диалог с одним текстовым полем ---
+function ask(title, label, placeholder, required) {
+  return new Promise(resolve => {
+    const dlg = $('#askDialog');
+    $('#askTitle').textContent = title;
+    $('#askLabel').textContent = label;
+    $('#askErr').textContent = '';
+    const input = $('#askInput');
+    input.value = ''; input.placeholder = placeholder || '';
+    const done = val => { dlg.close(); cleanup(); resolve(val); };
+    const onOk = () => {
+      const v = input.value.trim();
+      if (required && !v) { $('#askErr').textContent = 'Имя обязательно.'; return; }
+      done(v);
+    };
+    const onCancel = () => done(null);
+    const onKey = e => { if (e.key === 'Enter') { e.preventDefault(); onOk(); } };
+    function cleanup() {
+      $('#askOk').removeEventListener('click', onOk);
+      $('#askCancel').removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+    }
+    $('#askOk').addEventListener('click', onOk);
+    $('#askCancel').addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+    dlg.showModal();
+    input.focus();
+  });
+}
+
+// --- действия ---
+$('#loginBtn').addEventListener('click', async () => {
+  const token = $('#loginToken').value.trim();
+  if (!token) return;
+  const r = await fetch('/v1/admin/session', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Kai-UI': '1'},
+    body: JSON.stringify({token}),
+  });
+  if (!r.ok) {
+    $('#loginErr').textContent = r.status === 401 ? 'Токен не подошёл.' : 'Ошибка входа (HTTP ' + r.status + ').';
+    return;
+  }
+  $('#loginToken').value = '';
+  await showMain();
+});
+$('#loginToken').addEventListener('keydown', e => { if (e.key === 'Enter') $('#loginBtn').click(); });
+$('#logoutBtn').addEventListener('click', async () => {
+  try { await api('DELETE', '/v1/admin/session'); } catch (e) {}
+  showLogin();
+});
+
+$('#newDeviceBtn').addEventListener('click', async () => {
+  const name = await ask('Подключить устройство', 'Имя устройства (необязательно)', 'home-server');
+  if (name === null) return;
+  try {
+    const resp = await api('POST', '/v1/admin/tokens', {name_hint: name, ttl_sec: 3600});
+    $('#joinCmd').textContent = resp.join_command;
+    $('#tokenDialog').showModal();
+  } catch (e) { alert('Ошибка: ' + e.message); }
+});
+$('#joinCopy').addEventListener('click', e => copyText($('#joinCmd').textContent, e.target));
+$('#tokenClose').addEventListener('click', () => $('#tokenDialog').close());
+
+let currentConf = {id: '', name: '', text: ''};
+async function openConf(id, full) {
+  const c = await api('GET', '/v1/admin/static-peers/' + encodeURIComponent(id) + '/config' + (full ? '?full=1' : ''));
+  currentConf = {id: c.id, name: c.name, text: c.conf_ini};
+  $('#confTitle').textContent = c.name + ' — ' + c.overlay_ip;
+  $('#confFull').checked = !!full;
+  $('#confQR').src = 'data:image/png;base64,' + c.qr_png_base64;
+  $('#confText').textContent = c.conf_ini;
+  if (!$('#confDialog').open) $('#confDialog').showModal();
+}
+$('#confFull').addEventListener('change', async e => {
+  try { await openConf(currentConf.id, e.target.checked); }
+  catch (err) { alert('Ошибка: ' + err.message); }
+});
+$('#newPeerBtn').addEventListener('click', async () => {
+  const name = await ask('Новый static peer', 'Имя (например, iphone)', 'iphone', true);
+  if (name === null) return;
+  try {
+    const sp = await api('POST', '/v1/admin/static-peers', {name});
+    await refresh(true);
+    await openConf(sp.id);
+  } catch (e) { alert('Ошибка: ' + e.message); }
+});
+
+// --- публикации ---
+$('#newPubBtn').addEventListener('click', () => {
+  $('#pubName').value = ''; $('#pubPort').value = ''; $('#pubTarget').value = '';
+  $('#pubErr').textContent = '';
+  $('#pubDialog').showModal();
+  $('#pubName').focus();
+});
+$('#pubCancel').addEventListener('click', () => $('#pubDialog').close());
+$('#pubOk').addEventListener('click', async () => {
+  const name = $('#pubName').value.trim();
+  const port = parseInt($('#pubPort').value.trim(), 10);
+  const target = $('#pubTarget').value.trim();
+  if (!name || !port || !target) { $('#pubErr').textContent = 'Заполни все поля.'; return; }
+  try {
+    await api('POST', '/v1/admin/publishes', {name, listen_port: port, target});
+    $('#pubDialog').close();
+    await refresh(true);
+  } catch (e) { $('#pubErr').textContent = e.message; }
+});
+
+// --- политики ---
+const splitTags = s => s.split(',').map(x => x.trim()).filter(Boolean);
+$('#newPolicyBtn').addEventListener('click', () => {
+  $('#polName').value = ''; $('#polFrom').value = ''; $('#polTo').value = '';
+  $('#polPorts').value = ''; $('#polProto').value = 'any'; $('#polErr').textContent = '';
+  $('#policyDialog').showModal();
+  $('#polName').focus();
+});
+$('#polCancel').addEventListener('click', () => $('#policyDialog').close());
+$('#polOk').addEventListener('click', async () => {
+  const name = $('#polName').value.trim();
+  if (!name) { $('#polErr').textContent = 'Имя обязательно.'; return; }
+  try {
+    await api('POST', '/v1/admin/policies', {
+      name,
+      src_tags: splitTags($('#polFrom').value),
+      dst_tags: splitTags($('#polTo').value),
+      protocol: $('#polProto').value,
+      ports: splitTags($('#polPorts').value),
+      enabled: true,
+    });
+    $('#policyDialog').close();
+    await refresh(true);
+  } catch (e) { $('#polErr').textContent = e.message; }
+});
+$('#confCopy').addEventListener('click', e => copyText(currentConf.text, e.target));
+$('#confDownload').addEventListener('click', () => {
+  const blob = new Blob([currentConf.text], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = currentConf.name + '.conf';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+$('#confClose').addEventListener('click', () => $('#confDialog').close());
+
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (t.dataset.copy) { copyText(t.dataset.copy); return; }
+  if (t.dataset.conf) {
+    try { await openConf(t.dataset.conf); } catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.delNode) {
+    const warn = t.dataset.hub === 'true'
+      ? `Удалить ХАБ «${t.dataset.name}»? Вся сеть перестанет работать, пока хаб не будет заново подключён.`
+      : `Удалить устройство «${t.dataset.name}»? Ему придётся заново проходить enroll.`;
+    if (!confirm(warn)) return;
+    try { await api('DELETE', '/v1/admin/nodes/' + encodeURIComponent(t.dataset.delNode)); await refresh(true); }
+    catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.delPeer) {
+    if (!confirm(`Удалить static peer «${t.dataset.name}»? Его конфиг перестанет работать.`)) return;
+    try { await api('DELETE', '/v1/admin/static-peers/' + encodeURIComponent(t.dataset.delPeer)); await refresh(true); }
+    catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.delPub) {
+    if (!confirm(`Убрать публикацию «${t.dataset.name}»? Публичный порт закроется.`)) return;
+    try { await api('DELETE', '/v1/admin/publishes/' + encodeURIComponent(t.dataset.delPub)); await refresh(true); }
+    catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.approve) {
+    if (!confirm(`Одобрить устройство «${t.dataset.name}»? Оно получит доступ к сети.`)) return;
+    try { await api('POST', '/v1/admin/nodes/' + encodeURIComponent(t.dataset.approve) + '/approve'); await refresh(true); }
+    catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.tagNode) {
+    const cur = t.dataset.tags || '';
+    const val = prompt(`Теги для «${t.dataset.name}» (через запятую):`, cur);
+    if (val === null) return;
+    try {
+      await api('POST', '/v1/admin/nodes/' + encodeURIComponent(t.dataset.tagNode) + '/tags',
+        {tags: val.split(',').map(x => x.trim()).filter(Boolean)});
+      await refresh(true);
+    } catch (err) { alert('Ошибка: ' + err.message); }
+    return;
+  }
+  if (t.dataset.delPolicy) {
+    if (!confirm(`Удалить политику «${t.dataset.name}»?`)) return;
+    try { await api('DELETE', '/v1/admin/policies/' + encodeURIComponent(t.dataset.delPolicy)); await refresh(true); }
+    catch (err) { alert('Ошибка: ' + err.message); }
+  }
+});
+
+// Тумблеры подсетей: собираем все отмеченные маршруты узла и шлём одним запросом.
+document.addEventListener('change', async e => {
+  const t = e.target;
+  if (!t.dataset || !t.dataset.routeNode) return;
+  const id = t.dataset.routeNode;
+  const enabled = [...document.querySelectorAll(`input[data-route-node="${CSS.escape(id)}"]:checked`)]
+    .map(el => el.value);
+  try {
+    await api('POST', '/v1/admin/nodes/' + encodeURIComponent(id) + '/routes', {enabled});
+    await refresh(true);
+  } catch (err) {
+    alert('Ошибка: ' + err.message);
+    t.checked = !t.checked; // откат чекбокса
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !$('#main').hidden) refresh().catch(() => {});
+});
+
+// --- старт: молча пробуем существующую сессию, без неё показываем вход ---
+(async () => {
+  try {
+    const r = await fetch('/v1/admin/nodes', {headers: {'X-Kai-UI': '1'}});
+    if (r.ok) { await showMain(); } else { showLogin(); }
+  } catch (e) { showLogin(); }
+})();
+</script>
+</body>
+</html>

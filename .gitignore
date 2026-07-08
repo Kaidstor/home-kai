@@ -1,0 +1,17 @@
+/bin/
+*.png
+.DS_Store
+
+# Local agent/coordinator state and secrets — never commit
+*.db
+*.db-wal
+*.db-shm
+state.json
+coordinator.toml
+*.key
+*.pem
+
+# Local tooling
+.claude/
+.sec
+.env

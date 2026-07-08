@@ -1,0 +1,13 @@
+[Unit]
+Description=kai overlay network agent (WireGuard node)
+After=network-online.target kai-coordinator.service
+Wants=network-online.target
+
+[Service]
+# root: netlink для управления wireguard-интерфейсом
+ExecStart=/usr/local/bin/kai-agent up
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
