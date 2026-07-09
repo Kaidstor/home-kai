@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// onlineWindow mirrors the web UI's definition of "online": agents touch the
-// coordinator at least every ~70s (long-poll cycle), so two missed cycles
-// means the node is gone.
+// onlineWindow is the single definition of "online" (metrics and the `online`
+// field in NodeInfo, which the web UI consumes): agents touch the coordinator
+// at least every ~70s (long-poll cycle), so two missed cycles means the node
+// is gone.
 const onlineWindow = 150 * time.Second
 
 // handleMetrics serves a hand-rolled Prometheus exposition (admin bearer

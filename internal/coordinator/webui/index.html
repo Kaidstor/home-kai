@@ -247,7 +247,6 @@
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
-const ONLINE_MS = 150000; // агент трогает координатор минимум раз в ~70 с (long-poll)
 
 let refreshTimer = null;
 localStorage.removeItem('kai_admin_token'); // зачистка ключа из старой версии UI
@@ -315,7 +314,7 @@ function renderNodes(nodes) {
   table.hidden = nodes.length === 0;
   $('#nodesEmpty').hidden = nodes.length !== 0;
   tbody.innerHTML = nodes.map(n => {
-    const online = Date.now() - new Date(n.last_seen).getTime() < ONLINE_MS;
+    const online = n.online; // единое определение «online» считает координатор
     const isHub = n.role === 'hub';
     const pending = n.approved === false;
     const tags = (n.tags || []).map(t => `<span class="badge">${esc(t)}</span>`).join(' ') || '<span class="muted">—</span>';
@@ -639,7 +638,7 @@ document.addEventListener('click', async e => {
     if (val === null) return;
     try {
       await api('POST', '/v1/admin/nodes/' + encodeURIComponent(t.dataset.tagNode) + '/tags',
-        {tags: val.split(',').map(x => x.trim()).filter(Boolean)});
+        {tags: splitTags(val)});
       await refresh(true);
     } catch (err) { alert('Ошибка: ' + err.message); }
     return;

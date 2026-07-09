@@ -16,10 +16,10 @@ import (
 )
 
 // reservedPorts can never be published: coordinator/WireGuard/SSH plus what
-// already lives on this VPS (xray, zabbix) and 80 — certbot's http-01 needs it
-// free for the UI certificate.
+// already lives on this VPS (xray, zabbix), 80 — certbot's http-01 needs it
+// free for the UI certificate — and 53, the hub's overlay DNS responder.
 var reservedPorts = map[int]bool{
-	22: true, 80: true, 443: true, 8443: true, 8444: true,
+	22: true, 53: true, 80: true, 443: true, 8443: true, 8444: true,
 	9443: true, 10050: true, 51820: true,
 }
 
@@ -37,8 +37,8 @@ func (s *Server) validatePublishTarget(target string) error {
 		}
 		return nil
 	}
-	if !strings.HasSuffix(host, hostsSuffix) {
-		return fmt.Errorf("target host must be an overlay IP or a *%s name", hostsSuffix)
+	if !strings.HasSuffix(host, api.HostsSuffix) {
+		return fmt.Errorf("target host must be an overlay IP or a *%s name", api.HostsSuffix)
 	}
 	return nil
 }
@@ -78,7 +78,7 @@ func (s *Server) handlePublishCreate(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -113,7 +113,7 @@ func (s *Server) handlePublishDelete(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}

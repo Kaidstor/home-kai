@@ -103,12 +103,14 @@ func (s *Server) wakeChan() <-chan struct{} {
 
 // bumpNetmap increments the netmap version and wakes every pending long-poll.
 // Every mutating admin action ends with it, so keep the two steps together.
-func (s *Server) bumpNetmap() error {
-	if _, err := s.store.BumpNetmapVersion(); err != nil {
-		return err
+// Most callers ignore the returned version; enroll embeds it in its response.
+func (s *Server) bumpNetmap() (int64, error) {
+	version, err := s.store.BumpNetmapVersion()
+	if err != nil {
+		return 0, err
 	}
 	s.notifyNetmapChanged()
-	return nil
+	return version, nil
 }
 
 // nodeOr404 loads the node named by the {id} path segment, writing the
@@ -143,18 +145,20 @@ func (s *Server) staticPeerOr404(w http.ResponseWriter, r *http.Request) (store.
 
 // --- store → api converters (kept next to their siblings toAPIPolicy/Publish) ---
 
-func toAPINode(n store.Node) api.NodeInfo {
+func toAPINode(n store.Node, now time.Time) api.NodeInfo {
 	return api.NodeInfo{
 		NodeID: n.ID, Hostname: n.Name, Role: api.NodeRole(n.Role), OS: n.OS,
 		OverlayIP: n.OverlayIP, DNSName: n.DNSName, CreatedAt: n.CreatedAt, LastSeen: n.LastSeen,
+		Online:           now.Sub(n.LastSeen) < onlineWindow,
 		RoutesAdvertised: n.RoutesAdvertised, RoutesEnabled: n.RoutesEnabled,
 		Approved: n.Approved, Tags: n.Tags,
 	}
 }
 
-func toAPIStaticPeerInfo(p store.StaticPeer) api.StaticPeerInfo {
+func toAPIStaticPeer(p store.StaticPeer) api.StaticPeerInfo {
 	return api.StaticPeerInfo{
-		ID: p.ID, Name: p.Name, OverlayIP: p.OverlayIP, DNSName: p.DNSName, CreatedAt: p.CreatedAt,
+		ID: p.ID, Name: p.Name, OverlayIP: p.OverlayIP, DNSName: p.DNSName,
+		CreatedAt: p.CreatedAt, Tags: p.Tags,
 	}
 }
 
@@ -192,8 +196,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/admin/lock", s.withAdmin(s.handleLockInit))
 	mux.HandleFunc("POST /v1/admin/lock/sign", s.withAdmin(s.handleLockSign))
 	mux.HandleFunc("DELETE /v1/admin/lock", s.withAdmin(s.handleLockDisable))
-	// The UI page itself is a static shell without secrets; every API call it
-	// makes carries the admin bearer token.
+	// The UI page itself is a static shell without secrets; its API calls are
+	// authenticated by the HttpOnly session cookie + X-Kai-UI header.
 	mux.HandleFunc("GET /ui", s.handleUI)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui", http.StatusFound)

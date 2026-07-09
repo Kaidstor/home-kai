@@ -24,11 +24,11 @@ const (
 )
 
 func (s *Server) lockState() (pub string, active bool, err error) {
-	pub, err = s.store.MetaGet(metaLockPubKey)
+	pub, err = s.store.GetMeta(metaLockPubKey)
 	if err != nil {
 		return "", false, err
 	}
-	a, err := s.store.MetaGet(metaLockActive)
+	a, err := s.store.GetMeta(metaLockActive)
 	return pub, a == "1", err
 }
 
@@ -103,7 +103,7 @@ func (s *Server) handleLockInit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.MetaSet(metaLockPubKey, req.PublicKey); err != nil {
+	if err := s.store.SetMeta(metaLockPubKey, req.PublicKey); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -175,14 +175,14 @@ func (s *Server) handleLockSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(pending) == 0 {
-		if err := s.store.MetaSet(metaLockActive, "1"); err != nil {
+		if err := s.store.SetMeta(metaLockActive, "1"); err != nil {
 			s.errInternal(w, err)
 			return
 		}
 		s.log.Info("network lock ACTIVE — all bindings signed")
 		s.logEvent(evLockActive, "admin", "network lock активирован (все привязки подписаны)")
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -193,15 +193,15 @@ func (s *Server) handleLockSign(w http.ResponseWriter, r *http.Request) {
 // keep enforcing it until their state is reset, but the coordinator stops
 // distributing it (existing signatures are kept in case it is re-enabled).
 func (s *Server) handleLockDisable(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.MetaDelete(metaLockPubKey); err != nil {
+	if err := s.store.DeleteMeta(metaLockPubKey); err != nil {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.store.MetaDelete(metaLockActive); err != nil {
+	if err := s.store.DeleteMeta(metaLockActive); err != nil {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}

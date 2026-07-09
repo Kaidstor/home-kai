@@ -47,6 +47,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = api.RoleNode
 	}
+	if req.Role != api.RoleNode && req.Role != api.RoleHub {
+		writeErr(w, http.StatusBadRequest, "role must be node or hub")
+		return
+	}
 
 	nodes, err := s.store.Nodes()
 	if err != nil {
@@ -64,13 +68,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 		overlayIP = HubIP(s.cfg.OverlayCIDR)
 	} else {
-		used, err := s.store.AllocatedIPs()
-		if err != nil {
-			s.errInternal(w, err)
-			return
-		}
-		used[HubIP(s.cfg.OverlayCIDR).String()] = true // reserved even before the hub enrolls
-		overlayIP, err = AllocateIP(s.cfg.OverlayCIDR, used)
+		overlayIP, err = s.allocateIP()
 		if err != nil {
 			s.errInternal(w, err)
 			return
@@ -109,12 +107,11 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	version, err := s.store.BumpNetmapVersion()
+	version, err := s.bumpNetmap()
 	if err != nil {
 		s.errInternal(w, err)
 		return
 	}
-	s.notifyNetmapChanged()
 	s.log.Info("node enrolled", "id", node.ID, "name", name, "role", node.Role, "ip", node.OverlayIP, "dns", dnsName, "approved", approved)
 	if approved {
 		s.logEvent(evNodeEnroll, name, fmt.Sprintf("узел %s (%s) подключён с ролью %s", name, node.OverlayIP, node.Role))
@@ -213,20 +210,26 @@ func (s *Server) buildNetmapFor(node store.Node, version int64) (api.Netmap, err
 }
 
 func (s *Server) handleNetmap(w http.ResponseWriter, r *http.Request, node store.Node) {
-	// An unapproved node sees nothing until the admin lets it in. It keeps
-	// long-polling, so approval takes effect within one poll cycle.
-	if !node.Approved {
-		select {
-		case <-time.After(longPollTimeout):
-			w.WriteHeader(http.StatusNotModified)
-		case <-r.Context().Done():
-		}
-		return
-	}
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	deadline := time.After(longPollTimeout)
 	for {
 		wake := s.wakeChan()
+		// An unapproved node sees nothing until the admin lets it in. Approval
+		// bumps the netmap, so waiting on the wake channel picks it up at once.
+		if !node.Approved {
+			select {
+			case <-wake:
+				if fresh, err := s.store.NodeByID(node.ID); err == nil {
+					node = fresh
+				}
+				continue
+			case <-deadline:
+				w.WriteHeader(http.StatusNotModified)
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
 		version, err := s.store.NetmapVersion()
 		if err != nil {
 			s.errInternal(w, err)
@@ -276,18 +279,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, node store
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	wasEnabled := text.JoinCSV(node.RoutesEnabled)
-	routesChanged, err := s.store.SetAdvertisedRoutes(node.ID, routes)
+	advChanged, enabledChanged, err := s.store.SetAdvertisedRoutes(node.ID, routes)
 	if err != nil {
 		s.errInternal(w, err)
 		return
 	}
-	if routesChanged {
+	if advChanged {
 		s.log.Info("advertised routes updated", "node", node.Name, "routes", routes)
-		if fresh, err := s.store.NodeByID(node.ID); err == nil && text.JoinCSV(fresh.RoutesEnabled) != wasEnabled {
-			needBump = true
-		}
 	}
+	needBump = needBump || enabledChanged
 
 	// Observed endpoints come only from the hub (it terminates every tunnel).
 	if node.Role == string(api.RoleHub) && len(rep.PeersObserved) > 0 {
@@ -317,7 +317,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, node store
 	// Endpoint/route changes alter M3 candidates or subnet routing — wake the
 	// long-polls. Unchanged heartbeats (the common case) bump nothing.
 	if needBump {
-		if err := s.bumpNetmap(); err != nil {
+		if _, err := s.bumpNetmap(); err != nil {
 			s.errInternal(w, err)
 			return
 		}
@@ -347,7 +347,7 @@ func (s *Server) handleRekey(w http.ResponseWriter, r *http.Request, node store.
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -364,9 +364,12 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Clamp: an enroll token is a bearer credential, "practically eternal"
+	// must not be one typo away.
+	const maxTokenTTL = 7 * 24 * time.Hour
 	ttl := time.Hour
 	if req.TTLSec > 0 {
-		ttl = time.Duration(req.TTLSec) * time.Second
+		ttl = min(time.Duration(req.TTLSec)*time.Second, maxTokenTTL)
 	}
 	token, err := randomHex(24)
 	if err != nil {
@@ -393,9 +396,10 @@ func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
+	now := time.Now()
 	out := make([]api.NodeInfo, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, toAPINode(n))
+		out = append(out, toAPINode(n, now))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -451,7 +455,7 @@ func (s *Server) handleNodeRoutes(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -473,7 +477,7 @@ func (s *Server) handleNodeApprove(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -497,7 +501,7 @@ func (s *Server) handleNodeTags(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -519,7 +523,7 @@ func (s *Server) handleNodeDelete(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("dns record deletion failed", "fqdn", node.DNSName, "err", err)
 		}
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}

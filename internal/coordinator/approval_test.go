@@ -68,7 +68,7 @@ func TestEventsLogged(t *testing.T) {
 		t.Fatalf("expected enroll + peer events, got %d", len(evs))
 	}
 	// Newest first.
-	if evs[0].Kind != "peer.create" {
+	if evs[0].Kind != evStaticPeerCreate {
 		t.Fatalf("newest event: %+v", evs[0])
 	}
 	kinds := map[string]bool{}

@@ -137,6 +137,19 @@ func (s *Store) addColumnIfMissing(ddl string) error {
 	return err
 }
 
+// execOne runs a statement that must affect at least one row; zero rows means
+// the target does not exist (ErrNotFound).
+func (s *Store) execOne(query string, args ...any) error {
+	res, err := s.db.Exec(query, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type Node struct {
 	ID             string
 	Name           string
@@ -255,44 +268,25 @@ func scanNode(row interface{ Scan(...any) error }) (Node, error) {
 
 // SetNodeApproved gates a node into the network.
 func (s *Store) SetNodeApproved(id string, approved bool) error {
-	res, err := s.db.Exec(`UPDATE nodes SET approved = ? WHERE id = ?`, approved, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE nodes SET approved = ? WHERE id = ?`, approved, id)
 }
 
 func (s *Store) SetNodeTags(id string, tags []string) error {
-	res, err := s.db.Exec(`UPDATE nodes SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE nodes SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
 }
 
 func (s *Store) SetStaticPeerTags(id string, tags []string) error {
-	res, err := s.db.Exec(`UPDATE static_peers SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE static_peers SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
 }
 
 // SetAdvertisedRoutes stores what the agent reports; enabled routes that are
-// no longer advertised are dropped. Reports whether anything changed.
-func (s *Store) SetAdvertisedRoutes(id string, routes []string) (bool, error) {
+// no longer advertised are dropped. advChanged reports any change,
+// enabledChanged that a previously enabled route was retracted (the netmap
+// must be rebuilt).
+func (s *Store) SetAdvertisedRoutes(id string, routes []string) (advChanged, enabledChanged bool, err error) {
 	n, err := s.NodeByID(id)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	adv := text.JoinCSV(routes)
 	stillAdvertised := map[string]bool{}
@@ -306,23 +300,21 @@ func (s *Store) SetAdvertisedRoutes(id string, routes []string) (bool, error) {
 		}
 	}
 	en := text.JoinCSV(enabled)
-	if adv == text.JoinCSV(n.RoutesAdvertised) && en == text.JoinCSV(n.RoutesEnabled) {
-		return false, nil
+	advChanged = adv != text.JoinCSV(n.RoutesAdvertised) || en != text.JoinCSV(n.RoutesEnabled)
+	enabledChanged = en != text.JoinCSV(n.RoutesEnabled)
+	if !advChanged {
+		return false, false, nil
 	}
 	_, err = s.db.Exec(`UPDATE nodes SET routes_advertised = ?, routes_enabled = ? WHERE id = ?`, adv, en, id)
-	return err == nil, err
+	if err != nil {
+		return false, false, err
+	}
+	return advChanged, enabledChanged, nil
 }
 
 // SetEnabledRoutes stores the admin-approved subset (caller validates it).
 func (s *Store) SetEnabledRoutes(id string, routes []string) error {
-	res, err := s.db.Exec(`UPDATE nodes SET routes_enabled = ? WHERE id = ?`, text.JoinCSV(routes), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE nodes SET routes_enabled = ? WHERE id = ?`, text.JoinCSV(routes), id)
 }
 
 func (s *Store) NodeByID(id string) (Node, error) {
@@ -351,14 +343,7 @@ func (s *Store) Nodes() ([]Node, error) {
 }
 
 func (s *Store) DeleteNode(id string) error {
-	res, err := s.db.Exec(`DELETE FROM nodes WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`DELETE FROM nodes WHERE id = ?`, id)
 }
 
 func (s *Store) TouchNode(id string, now time.Time) error {
@@ -369,36 +354,15 @@ func (s *Store) TouchNode(id string, now time.Time) error {
 // SetNodeKey stores a rotated WireGuard public key. The lock signature
 // covers the old key, so it is cleared — the binding must be re-signed.
 func (s *Store) SetNodeKey(id, pubkey string) error {
-	res, err := s.db.Exec(`UPDATE nodes SET wg_pubkey = ?, lock_sig = '' WHERE id = ?`, pubkey, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE nodes SET wg_pubkey = ?, lock_sig = '' WHERE id = ?`, pubkey, id)
 }
 
 func (s *Store) SetNodeLockSig(id, sig string) error {
-	res, err := s.db.Exec(`UPDATE nodes SET lock_sig = ? WHERE id = ?`, sig, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE nodes SET lock_sig = ? WHERE id = ?`, sig, id)
 }
 
 func (s *Store) SetStaticPeerLockSig(id, sig string) error {
-	res, err := s.db.Exec(`UPDATE static_peers SET lock_sig = ? WHERE id = ?`, sig, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`UPDATE static_peers SET lock_sig = ? WHERE id = ?`, sig, id)
 }
 
 func (s *Store) ClearLockSigs() error {
@@ -411,8 +375,8 @@ func (s *Store) ClearLockSigs() error {
 
 // --- meta key/value (netmap version, lock settings) ---
 
-// MetaGet returns "" for missing keys.
-func (s *Store) MetaGet(key string) (string, error) {
+// GetMeta returns "" for missing keys.
+func (s *Store) GetMeta(key string) (string, error) {
 	var v string
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -421,13 +385,13 @@ func (s *Store) MetaGet(key string) (string, error) {
 	return v, err
 }
 
-func (s *Store) MetaSet(key, value string) error {
+func (s *Store) SetMeta(key, value string) error {
 	_, err := s.db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
 
-func (s *Store) MetaDelete(key string) error {
+func (s *Store) DeleteMeta(key string) error {
 	_, err := s.db.Exec(`DELETE FROM meta WHERE key = ?`, key)
 	return err
 }
@@ -441,12 +405,12 @@ func (s *Store) CreateStaticPeer(p StaticPeer) error {
 	return err
 }
 
-func (s *Store) StaticPeerByID(id string) (StaticPeer, error) {
+const staticPeerCols = `id, name, wg_pubkey, wg_privkey, overlay_ip, dns_name, created_at, lock_sig, tags`
+
+func scanStaticPeer(row interface{ Scan(...any) error }) (StaticPeer, error) {
 	var p StaticPeer
 	var tags string
-	err := s.db.QueryRow(`SELECT id, name, wg_pubkey, wg_privkey, overlay_ip, dns_name, created_at, lock_sig, tags
-		FROM static_peers WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.WGPubKey, &p.WGPrivKey, &p.OverlayIP, &p.DNSName, &p.CreatedAt, &p.LockSig, &tags)
+	err := row.Scan(&p.ID, &p.Name, &p.WGPubKey, &p.WGPrivKey, &p.OverlayIP, &p.DNSName, &p.CreatedAt, &p.LockSig, &tags)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StaticPeer{}, ErrNotFound
 	}
@@ -454,31 +418,26 @@ func (s *Store) StaticPeerByID(id string) (StaticPeer, error) {
 	return p, err
 }
 
+func (s *Store) StaticPeerByID(id string) (StaticPeer, error) {
+	return scanStaticPeer(s.db.QueryRow(`SELECT `+staticPeerCols+` FROM static_peers WHERE id = ?`, id))
+}
+
 func (s *Store) DeleteStaticPeer(id string) error {
-	res, err := s.db.Exec(`DELETE FROM static_peers WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`DELETE FROM static_peers WHERE id = ?`, id)
 }
 
 func (s *Store) StaticPeers() ([]StaticPeer, error) {
-	rows, err := s.db.Query(`SELECT id, name, wg_pubkey, wg_privkey, overlay_ip, dns_name, created_at, lock_sig, tags FROM static_peers ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT ` + staticPeerCols + ` FROM static_peers ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []StaticPeer
 	for rows.Next() {
-		var p StaticPeer
-		var tags string
-		if err := rows.Scan(&p.ID, &p.Name, &p.WGPubKey, &p.WGPrivKey, &p.OverlayIP, &p.DNSName, &p.CreatedAt, &p.LockSig, &tags); err != nil {
+		p, err := scanStaticPeer(rows)
+		if err != nil {
 			return nil, err
 		}
-		p.Tags = text.SplitCSV(tags)
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -524,14 +483,7 @@ func (s *Store) Policies() ([]Policy, error) {
 }
 
 func (s *Store) DeletePolicy(id string) error {
-	res, err := s.db.Exec(`DELETE FROM policies WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`DELETE FROM policies WHERE id = ?`, id)
 }
 
 // --- events (activity log) ---
@@ -622,14 +574,7 @@ func (s *Store) Publishes() ([]Publish, error) {
 }
 
 func (s *Store) DeletePublish(id string) error {
-	res, err := s.db.Exec(`DELETE FROM publishes WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.execOne(`DELETE FROM publishes WHERE id = ?`, id)
 }
 
 // --- endpoints (M3 discovery data) ---

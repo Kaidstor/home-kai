@@ -13,10 +13,6 @@ import (
 // also relies on it to observe fresh reflexive endpoints (M3).
 const KeepaliveSec = 25
 
-// hostsSuffix is the pseudo-TLD for device names in the managed /etc/hosts
-// block (`ssh backup@nas.kai`).
-const hostsSuffix = ".kai"
-
 // buildHosts derives a stable name→overlay-IP list for every device. Names
 // are sanitized to DNS labels; duplicates get -2, -3, … in enrollment order.
 func buildHosts(nodes []store.Node, statics []store.StaticPeer) []api.HostEntry {
@@ -29,7 +25,7 @@ func buildHosts(nodes []store.Node, statics []store.StaticPeer) []api.HostEntry 
 			label = fmt.Sprintf("%s-%d", base, i)
 		}
 		used[label] = true
-		out = append(out, api.HostEntry{Name: label + hostsSuffix, IP: ip})
+		out = append(out, api.HostEntry{Name: label + api.HostsSuffix, IP: ip})
 	}
 	for _, n := range nodes {
 		add(n.Name, n.OverlayIP)

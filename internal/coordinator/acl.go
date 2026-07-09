@@ -168,7 +168,7 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -199,7 +199,7 @@ func (s *Server) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}

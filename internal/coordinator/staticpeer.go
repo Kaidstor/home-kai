@@ -37,13 +37,7 @@ func (s *Server) handleStaticPeerCreate(w http.ResponseWriter, r *http.Request) 
 		s.errInternal(w, err)
 		return
 	}
-	used, err := s.store.AllocatedIPs()
-	if err != nil {
-		s.errInternal(w, err)
-		return
-	}
-	used[HubIP(s.cfg.OverlayCIDR).String()] = true
-	ip, err := AllocateIP(s.cfg.OverlayCIDR, used)
+	ip, err := s.allocateIP()
 	if err != nil {
 		s.errInternal(w, err)
 		return
@@ -64,7 +58,7 @@ func (s *Server) handleStaticPeerCreate(w http.ResponseWriter, r *http.Request) 
 		s.errInternal(w, err)
 		return
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
@@ -72,7 +66,7 @@ func (s *Server) handleStaticPeerCreate(w http.ResponseWriter, r *http.Request) 
 	conf := renderStaticPeerConf(pair.Private.String(), sp.OverlayIP, hub.WGPubKey,
 		s.cfg.HubEndpoint, s.cfg.OverlayCIDR.Masked().String(), req.Full)
 	s.log.Info("static peer created", "name", sp.Name, "ip", sp.OverlayIP, "dns", dnsName, "full", req.Full)
-	s.logEvent(evPeerCreate, "admin", fmt.Sprintf("static peer %s (%s) создан", sp.Name, sp.OverlayIP))
+	s.logEvent(evStaticPeerCreate, "admin", fmt.Sprintf("static peer %s (%s) создан", sp.Name, sp.OverlayIP))
 	writeJSON(w, http.StatusOK, api.StaticPeerCreateResponse{
 		ID: sp.ID, Name: sp.Name, OverlayIP: sp.OverlayIP, DNSName: dnsName, ConfINI: conf,
 	})
@@ -86,7 +80,7 @@ func (s *Server) handleStaticPeerList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]api.StaticPeerInfo, 0, len(peers))
 	for _, p := range peers {
-		out = append(out, toAPIStaticPeerInfo(p))
+		out = append(out, toAPIStaticPeer(p))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -133,12 +127,12 @@ func (s *Server) handleStaticPeerDelete(w http.ResponseWriter, r *http.Request) 
 			s.log.Warn("dns record deletion failed", "fqdn", sp.DNSName, "err", err)
 		}
 	}
-	if err := s.bumpNetmap(); err != nil {
+	if _, err := s.bumpNetmap(); err != nil {
 		s.errInternal(w, err)
 		return
 	}
 	s.log.Info("static peer deleted", "id", sp.ID, "name", sp.Name)
-	s.logEvent(evPeerDelete, "admin", fmt.Sprintf("static peer %s удалён", sp.Name))
+	s.logEvent(evStaticPeerDelete, "admin", fmt.Sprintf("static peer %s удалён", sp.Name))
 	w.WriteHeader(http.StatusNoContent)
 }
 

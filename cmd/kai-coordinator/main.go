@@ -164,8 +164,10 @@ func main() {
 		}
 		log.Info("kai-coordinator UI listening", "addr", cfg.UI.Listen, "cert", cfg.UI.CertFile)
 		go func() {
+			// The UI listener is auxiliary: losing it must not take down the
+			// agent-facing listener (the data plane control loop).
 			if err := uiSrv.ListenAndServeTLS("", ""); err != nil {
-				fatal(err)
+				log.Error("ui listener failed — web UI unavailable on this port", "addr", cfg.UI.Listen, "err", err)
 			}
 		}()
 	}
