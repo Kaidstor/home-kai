@@ -25,10 +25,12 @@ func (a *Agent) rekeyLoop(ctx context.Context) {
 	}
 
 	if a.st.KeyCreatedAt.IsZero() { // states from before key rotation existed
+		a.applyMu.Lock()
 		a.st.KeyCreatedAt = time.Now()
 		if err := a.st.Save(a.statePath); err != nil {
 			a.log.Warn("state save failed", "err", err)
 		}
+		a.applyMu.Unlock()
 	}
 
 	t := time.NewTicker(rekeyCheckInterval)
@@ -53,6 +55,7 @@ func (a *Agent) rekeyLoop(ctx context.Context) {
 
 // rotateKey: state first, then coordinator, then the live device. Whatever
 // step dies, the start-time re-assert converges state and server again.
+// applyMu keeps the state write from racing a concurrent netmap apply.
 func (a *Agent) rotateKey(ctx context.Context) error {
 	pair, err := wgkeys.Generate()
 	if err != nil {
@@ -61,6 +64,8 @@ func (a *Agent) rotateKey(ctx context.Context) error {
 	if err := a.client.Rekey(ctx, pair.Public.String()); err != nil {
 		return fmt.Errorf("coordinator rejected new key: %w", err)
 	}
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
 	a.st.WGPrivateKey = pair.Private.String()
 	a.st.KeyCreatedAt = time.Now()
 	if err := a.st.Save(a.statePath); err != nil {

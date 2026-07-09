@@ -77,7 +77,17 @@ type Agent struct {
 	client    *Client
 	dev       wgdev.Device
 	log       *slog.Logger
+	overlay   netip.Prefix   // parsed st.OverlayCIDR, set in Run
 	natRules  []iptablesRule // installed firewall rules, removed on shutdown
+
+	// applyMu serializes applyNetmap end-to-end (device, routes, hosts,
+	// filter) and every state-file write: the sync loop and the probe loop
+	// both apply netmaps, and interleaved applies could install a stale peer
+	// set or corrupt files written via the shared tmp-and-rename path.
+	applyMu sync.Mutex
+	// lastFilter is the fingerprint of the last applied ACL rule set; the
+	// iptables chain is rebuilt only when it changes. Guarded by applyMu.
+	lastFilter string
 
 	// mu guards nm and probes: the sync loop applies netmaps while the probe
 	// loop promotes/demotes direct paths, and both recompose the peer set.
@@ -105,7 +115,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bad overlay ip in state: %w", err)
 	}
-	overlay, err := netip.ParsePrefix(a.st.OverlayCIDR)
+	a.overlay, err = netip.ParsePrefix(a.st.OverlayCIDR)
 	if err != nil {
 		return fmt.Errorf("bad overlay cidr in state: %w", err)
 	}
@@ -118,7 +128,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		PrivateKey: priv,
 		ListenPort: a.st.ListenPort,
 		Address:    addr,
-		OverlayNet: overlay,
+		OverlayNet: a.overlay,
 		MTU:        a.st.MTU,
 	})
 	if err != nil {
@@ -217,18 +227,24 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			a.log.Error("netmap apply failed", "version", nm.Version, "err", err)
 			continue
 		}
-		a.st.Netmap = nm
-		if err := a.st.Save(a.statePath); err != nil {
-			a.log.Warn("state save failed", "err", err)
-		}
 		a.log.Info("netmap applied", "version", nm.Version, "peers", len(nm.Peers))
 	}
 }
 
+// applyNetmap makes the whole node state match nm: WG peers, OS routes,
+// /etc/hosts, publishes, ACL filter, DNS records and the state-file cache.
+// Serialized by applyMu — it is called both from the sync loop and from the
+// probe loop, and its side effects (device config, tmp-and-rename file
+// writes, iptables) must never interleave.
 func (a *Agent) applyNetmap(nm *api.Netmap) error {
-	overlay, err := netip.ParsePrefix(a.st.OverlayCIDR)
-	if err != nil {
-		return err
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+
+	if !a.overlay.IsValid() { // Run sets it; direct construction (tests) may not
+		var err error
+		if a.overlay, err = netip.ParsePrefix(a.st.OverlayCIDR); err != nil {
+			return err
+		}
 	}
 	if err := a.enforceLock(nm); err != nil {
 		return err
@@ -236,7 +252,7 @@ func (a *Agent) applyNetmap(nm *api.Netmap) error {
 	a.mu.Lock()
 	a.nm = nm
 	a.syncProbes(nm)
-	peers, subnetRoutes, err := a.composePeers(nm, overlay)
+	peers, subnetRoutes, err := a.composePeers(nm, a.overlay)
 	a.mu.Unlock()
 	if err != nil {
 		return err
@@ -252,12 +268,33 @@ func (a *Agent) applyNetmap(nm *api.Netmap) error {
 	if a.st.Role == api.RoleHub {
 		a.syncPublishes(nm.Publishes)
 	}
-	// ACL: enforce the inbound overlay firewall (Linux only). Filter failure
-	// must not abort the apply — degrade to no filtering with a logged error.
-	if err := a.applyFilter(nm.Self.FilterEnabled, nm.FilterRules); err != nil {
-		a.log.Error("applying ACL filter failed", "err", err)
+	a.syncFilter(nm)
+	// Cache the netmap so the data plane comes back after a reboot even with
+	// the coordinator down. Probe-triggered re-applies reuse the cached map.
+	if a.st.Netmap != nm {
+		a.st.Netmap = nm
+		if err := a.st.Save(a.statePath); err != nil {
+			a.log.Warn("state save failed", "err", err)
+		}
 	}
 	return nil
+}
+
+// syncFilter applies the ACL rule set only when it differs from the last
+// applied one — probe promotions re-apply netmaps every few seconds and must
+// not trigger a full iptables rebuild each time. Filter failure must not
+// abort the apply: degrade to the previous rules with a logged error.
+func (a *Agent) syncFilter(nm *api.Netmap) {
+	rules := nm.FilterRules
+	key := fmt.Sprintf("%v|%+v", nm.Self.FilterEnabled, rules)
+	if key == a.lastFilter {
+		return
+	}
+	if err := a.applyFilter(nm.Self.FilterEnabled, rules); err != nil {
+		a.log.Error("applying ACL filter failed", "err", err)
+		return
+	}
+	a.lastFilter = key
 }
 
 // composePeers merges the netmap with prober decisions. Probe-managed peers

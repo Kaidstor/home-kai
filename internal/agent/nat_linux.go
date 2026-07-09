@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/kaidstor/home-kai/internal/api"
@@ -180,7 +181,7 @@ func (a *Agent) applyFilter(enabled bool, rules []api.FilterRule) error {
 					}
 				} else {
 					// multiport takes a comma list (max 15) — chunk to be safe.
-					for _, chunk := range chunkPorts(rule.Ports, 15) {
+					for chunk := range slices.Chunk(rule.Ports, 15) {
 						args := append(append([]string{}, base...), "-p", rule.Protocol,
 							"-m", "multiport", "--dports", strings.Join(chunk, ","), "-j", "ACCEPT")
 						if err := ipt(args...); err != nil {
@@ -201,16 +202,4 @@ func (a *Agent) applyFilter(enabled bool, rules []api.FilterRule) error {
 		}
 	}
 	return nil
-}
-
-func chunkPorts(ports []string, n int) [][]string {
-	var out [][]string
-	for i := 0; i < len(ports); i += n {
-		end := i + n
-		if end > len(ports) {
-			end = len(ports)
-		}
-		out = append(out, ports[i:end])
-	}
-	return out
 }

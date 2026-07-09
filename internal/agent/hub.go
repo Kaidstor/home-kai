@@ -3,15 +3,16 @@ package agent
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/kaidstor/home-kai/internal/api"
 )
 
-// handshakeFresh: only endpoints with a recent handshake are worth
+// handshakeFreshness: only endpoints with a recent handshake are worth
 // distributing as hole-punch candidates (M3).
-const handshakeFresh = 3 * time.Minute
+const handshakeFreshness = 3 * time.Minute
 
 // observedPeers reports the reflexive endpoints this hub sees for each peer
 // with a fresh handshake — the coordinator turns them into M3 candidates.
@@ -27,7 +28,7 @@ func (a *Agent) observedPeers() []api.PeerObserved {
 			continue
 		}
 		age := time.Since(p.LastHandshake)
-		if age > handshakeFresh {
+		if age > handshakeFreshness {
 			continue
 		}
 		out = append(out, api.PeerObserved{
@@ -69,7 +70,9 @@ func (a *Agent) localEndpoints() []string {
 			if ip4 == nil || ip4.IsLoopback() || !ip4.IsPrivate() {
 				continue
 			}
-			if strings.HasPrefix(ip4.String(), "100.") { // skip our own overlay
+			// Skip our own overlay (relevant when overlay_cidr is an RFC1918
+			// range — the default 100.87/16 is not "private" to begin with).
+			if nip, ok := netip.AddrFromSlice(ip4); ok && a.overlay.Contains(nip) {
 				continue
 			}
 			out = append(out, fmt.Sprintf("%s:%d", ip4, a.st.ListenPort))
