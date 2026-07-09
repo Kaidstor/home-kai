@@ -13,35 +13,10 @@ import (
 	"github.com/kaidstor/home-kai/internal/text"
 )
 
-func cmdNodeApprove(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
-	}
-	if _, err := client().Do(ctx, http.MethodPost, "/v1/admin/nodes/"+args[0]+"/approve", nil, nil); err != nil {
-		fatal(err)
-	}
-	fmt.Println("approved", args[0])
-}
-
-func cmdNodeTag(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
-	}
-	id := args[0]
-	fs := flag.NewFlagSet("node tag", flag.ExitOnError)
-	tags := fs.String("tags", "", "comma-separated group tags (empty clears)")
-	_ = fs.Parse(args[1:])
-	if _, err := client().Do(ctx, http.MethodPost, "/v1/admin/nodes/"+id+"/tags",
-		api.TagsRequest{Tags: text.Fields(*tags)}, nil); err != nil {
-		fatal(err)
-	}
-	fmt.Printf("tags for %s: %s\n", id, *tags)
-}
-
 // cmdPolicy manages ACL policies:
 //
 //	kai policy list
-//	kai policy add <name> --from tagA,tagB --to tagC --proto tcp --ports 22,443 [--disabled]
+//	kai policy create <name> --from tagA,tagB --to tagC --proto tcp --ports 22,443 [--disabled]
 //	kai policy delete <id>
 func cmdPolicy(ctx context.Context, args []string) {
 	sub := ""
@@ -61,12 +36,12 @@ func cmdPolicy(ctx context.Context, args []string) {
 				p.ID, p.Name, text.JoinOr(p.SrcTags, "*"), text.JoinOr(p.DstTags, "*"), p.Protocol, strings.Join(p.Ports, ","), p.Enabled)
 		}
 		w.Flush()
-	case "add":
+	case "create":
 		if len(args) < 2 || args[1] == "" || args[1][0] == '-' {
-			fatal(fmt.Errorf("usage: kai policy add <name> --from ... --to ... [--proto tcp] [--ports 22,443] [--disabled]"))
+			fatal(fmt.Errorf("usage: kai policy create <name> --from ... --to ... [--proto tcp] [--ports 22,443] [--disabled]"))
 		}
 		name := args[1]
-		fs := flag.NewFlagSet("policy add", flag.ExitOnError)
+		fs := flag.NewFlagSet("policy create", flag.ExitOnError)
 		from := fs.String("from", "", "source tags (empty = any)")
 		to := fs.String("to", "", "destination tags (empty = any)")
 		proto := fs.String("proto", "any", "any|tcp|udp|icmp")
@@ -90,23 +65,6 @@ func cmdPolicy(ctx context.Context, args []string) {
 		}
 		fmt.Println("deleted", args[1])
 	default:
-		fatal(fmt.Errorf("usage: kai policy list|add|delete"))
+		fatal(fmt.Errorf("usage: kai policy list|create|delete"))
 	}
-}
-
-func cmdEvents(ctx context.Context, args []string) {
-	fs := flag.NewFlagSet("events", flag.ExitOnError)
-	limit := fs.Int("limit", 50, "how many recent events to show")
-	_ = fs.Parse(args)
-	var evs []api.Event
-	if _, err := client().Do(ctx, http.MethodGet, fmt.Sprintf("/v1/admin/events?limit=%d", *limit), nil, &evs); err != nil {
-		fatal(err)
-	}
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tKIND\tACTOR\tMESSAGE")
-	for _, e := range evs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			e.TS.Local().Format("2006-01-02 15:04:05"), e.Kind, e.Actor, e.Message)
-	}
-	w.Flush()
 }
