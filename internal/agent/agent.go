@@ -281,8 +281,10 @@ func (a *Agent) applyNetmap(nm *api.Netmap) error {
 	// the coordinator down. Probe-triggered re-applies reuse the cached map.
 	if a.st.Netmap != nm {
 		a.st.Netmap = nm
-		if err := a.st.Save(a.statePath); err != nil {
-			a.log.Warn("state save failed", "err", err)
+		if a.statePath != "" { // agents without a state file (tests) skip persistence
+			if err := a.st.Save(a.statePath); err != nil {
+				a.log.Warn("state save failed", "err", err)
+			}
 		}
 	}
 	return nil
