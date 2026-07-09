@@ -13,7 +13,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kaidstor/home-kai/internal/agent"
 	"github.com/kaidstor/home-kai/internal/api"
 )
 
@@ -24,7 +23,7 @@ func localClient() *http.Client {
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
-				return d.DialContext(ctx, "unix", agent.LocalSocketPath)
+				return d.DialContext(ctx, "unix", api.LocalSocketPath)
 			},
 		},
 	}
@@ -80,7 +79,7 @@ func cmdPing(ctx context.Context, args []string) {
 	if _, err := netip.ParseAddr(target); err != nil {
 		ip = ""
 		for _, h := range st.Hosts {
-			if h.Name == target || strings.TrimSuffix(h.Name, ".kai") == target {
+			if h.Name == target || strings.TrimSuffix(h.Name, api.HostsSuffix) == target {
 				ip = h.IP
 				break
 			}

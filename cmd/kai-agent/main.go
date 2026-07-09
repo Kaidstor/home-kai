@@ -163,7 +163,7 @@ func cmdRekey(args []string) {
 	statePath := fs.String("state", defaultStatePath, "agent state file")
 	_ = fs.Parse(args)
 
-	if c, err := net.Dial("unix", agent.LocalSocketPath); err == nil {
+	if c, err := net.Dial("unix", api.LocalSocketPath); err == nil {
 		c.Close()
 		fatal(fmt.Errorf("kai-agent is running — stop it first (or use --rekey-days for live rotation)"))
 	}

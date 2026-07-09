@@ -6,25 +6,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kaidstor/home-kai/internal/api"
 )
 
-// LocalSocketPath is where the agent exposes its read-only status API for the
-// kai CLI (`kai status`, `kai ping`). World-connectable on purpose: it only
-// reveals tunnel state, never keys, and requiring sudo for status would be
-// needless friction on a single-user machine.
-const LocalSocketPath = "/var/run/kai-agent.sock"
-
 func (a *Agent) serveLocalAPI(ctx context.Context) {
-	_ = os.Remove(LocalSocketPath)
-	l, err := net.Listen("unix", LocalSocketPath)
+	_ = os.Remove(api.LocalSocketPath)
+	l, err := net.Listen("unix", api.LocalSocketPath)
 	if err != nil {
 		a.log.Warn("local api unavailable", "err", err)
 		return
 	}
-	_ = os.Chmod(LocalSocketPath, 0o666)
+	_ = os.Chmod(api.LocalSocketPath, 0o666)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/local/status", func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +36,7 @@ func (a *Agent) serveLocalAPI(ctx context.Context) {
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
-		_ = os.Remove(LocalSocketPath)
+		_ = os.Remove(api.LocalSocketPath)
 	}()
 	_ = srv.Serve(l)
 }
@@ -123,10 +118,6 @@ func (a *Agent) localStatus() (api.LocalStatus, error) {
 }
 
 func trimCIDR(s string) string {
-	for i := range s {
-		if s[i] == '/' {
-			return s[:i]
-		}
-	}
-	return s
+	ip, _, _ := strings.Cut(s, "/")
+	return ip
 }

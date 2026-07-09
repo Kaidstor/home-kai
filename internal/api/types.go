@@ -14,6 +14,16 @@ const (
 	RoleNode NodeRole = "node"
 )
 
+// HostsSuffix is the pseudo-TLD for device names (`nas.kai`): used in the
+// managed /etc/hosts block, publish targets and the hub DNS responder.
+const HostsSuffix = ".kai"
+
+// LocalSocketPath is where the agent exposes its read-only status API for the
+// kai CLI (`kai status`, `kai ping`). World-connectable on purpose: it only
+// reveals tunnel state, never keys, and requiring sudo for status would be
+// needless friction on a single-user machine.
+const LocalSocketPath = "/var/run/kai-agent.sock"
+
 // EnrollRequest is sent by an agent once, authenticated by a one-time enroll
 // token. The WireGuard private key never leaves the node.
 type EnrollRequest struct {
@@ -192,6 +202,9 @@ type NodeInfo struct {
 	DNSName   string    `json:"dns_name,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	LastSeen  time.Time `json:"last_seen"`
+	// Online is computed by the coordinator (LastSeen within the long-poll
+	// window) so the UI and metrics share one definition.
+	Online bool `json:"online"`
 	// Subnet router: what the node offers vs what the admin has enabled.
 	RoutesAdvertised []string `json:"routes_advertised,omitempty"`
 	RoutesEnabled    []string `json:"routes_enabled,omitempty"`
@@ -232,6 +245,7 @@ type StaticPeerInfo struct {
 	OverlayIP string    `json:"overlay_ip"`
 	DNSName   string    `json:"dns_name,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	Tags      []string  `json:"tags,omitempty"`
 }
 
 // StaticPeerConfigResponse re-renders the WireGuard config of an existing
