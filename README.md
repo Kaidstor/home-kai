@@ -17,7 +17,7 @@ Zero-dependency: три статических Go-бинаря, состояни
 | `kai-agent` | каждый узел (Linux/macOS, root) | WireGuard-интерфейс, синхронизация пиров, p2p-prober, subnet router, /etc/hosts-имена, funnel-форвардеры (на хабе), кэш netmap |
 | `kai` | админская машина | токены, узлы/маршруты, static peers с QR, публикации, `status`/`ping`, network lock |
 
-Базовая топология — hub-and-spoke: узлы держат исходящий туннель к хабу (VPS), хаб форвардит. Наружу открыт только VPS: TCP 8443 (координатор) и UDP 51820 (WireGuard). iPhone/Android/роутер подключаются официальным WireGuard-клиентом (`kai peer add-static` → QR).
+Базовая топология — hub-and-spoke: узлы держат исходящий туннель к хабу (VPS), хаб форвардит. Наружу открыт только VPS: TCP 8443 (координатор) и UDP 51820 (WireGuard). iPhone/Android/роутер подключаются официальным WireGuard-клиентом (`kai peer create` → QR).
 
 Ключевые свойства:
 - **Data plane независим от control plane**: координатор может лежать — туннели работают (netmap кэшируется в state-файле агента).
@@ -28,8 +28,8 @@ Zero-dependency: три статических Go-бинаря, состояни
 
 - **Прямые p2p-соединения (M3).** Споки получают друг друга в netmap с кандидатами (LAN-адреса + reflexive-адреса, которые хаб видит по keepalive). Prober агента ставит пира с *пустыми* AllowedIPs — handshake пробивает NAT (обе стороны инициируют одновременно), а relay-путь через хаб не рвётся. После подтверждения пир получает свой `/32`, который побеждает `/16` хаба по longest prefix; стух handshake (>3 мин) — мгновенный откат на хаб. Путь виден в `kai status` (`direct`/`relay`).
 - **Subnet router.** `kai-agent up --advertise-routes 192.168.1.0/24` — узел предлагает роутить свою LAN; в netmap подсеть попадает только после включения админом (UI-чекбокс или `kai node routes <id> --enable ...`). Анонсирующий узел сам включает форвардинг и ставит MASQUERADE/FORWARD-правила (DOCKER-USER-совместимо); агенты пропускают маршрут, если он конфликтует с их локальной сетью (docker-бриджи!).
-- **Имена устройств.** Каждый агент ведёт блок в `/etc/hosts`: `ssh user@nas.kai`. Работает офлайн, без своего DNS. Отключается `--no-hosts`.
-- **Exit node для static peers.** Тумблер «полный туннель» в UI (или `kai peer add-static имя --full`): конфиг с `AllowedIPs 0.0.0.0/0` — весь трафик телефона идёт через VPS (хаб маскарадит наружу). IPv6 сознательно не заворачивается.
+- **Имена устройств.** Каждый агент ведёт блок в `/etc/hosts`: `ssh user@nas.kai`. Работает офлайн, без своего DNS. Отключается `--no-hosts`. Для static peers (телефоны/роутеры), где `/etc/hosts` недоступен, хаб поднимает DNS-резолвер на своём overlay-IP: отвечает на `*.kai` из netmap, остальное форвардит в 1.1.1.1/8.8.8.8; конфиг static peer прописывает его в `DNS =` вместе с search-доменом `kai` — с телефона работает и `nas.kai`, и просто `nas`.
+- **Exit node для static peers.** Тумблер «полный туннель» в UI (или `kai peer create имя --full`): конфиг с `AllowedIPs 0.0.0.0/0` — весь трафик телефона идёт через VPS (хаб маскарадит наружу). IPv6 сознательно не заворачивается.
 - **Публикации (funnel).** TCP-проброс с публичного порта VPS на сервис в оверлее: `{"name":"jellyfin","listen_port":8096,"target":"nas.kai:8096"}` — хаб слушает порт и форвардит. Управление в UI или через `POST /v1/admin/publishes`.
 - **Ротация WG-ключей.** `kai-agent up --rekey-days 30` — авторотация на живом устройстве; `kai-agent rekey` — офлайн. Прерванная ротация самолечится (агент ре-ассертит ключ при старте).
 - **Network lock** (аналог tailnet lock). `kai lock init` создаёт ed25519-ключ **только на админской машине** (`~/.config/kai/lock.key` — забэкапь!), `kai lock sign` подписывает привязки (wg-ключ, overlay-IP) всех устройств. Агенты пинят ключ и отбрасывают неподписанных пиров: скомпрометированный координатор не может подсунуть своего. Новые устройства и ротации ключей требуют `kai lock sign`. `kai lock status` / `kai lock disable`.
@@ -70,8 +70,9 @@ sec run home-kai -- kai node delete <node_id>
 sec run home-kai -- kai node routes <node_id> --enable 192.168.1.0/24
 sec run home-kai -- kai node approve <node_id>       # peer approval
 sec run home-kai -- kai node tag <node_id> --tags web,prod
-sec run home-kai -- kai policy add web-ssh --from admin --to web --proto tcp --ports 22
-sec run home-kai -- kai peer add-static iphone [--full]   # QR; --full = exit node
+sec run home-kai -- kai policy create web-ssh --from admin --to web --proto tcp --ports 22
+sec run home-kai -- kai peer create iphone [--full]   # QR; --full = exit node
+sec run home-kai -- kai peer tag <peer_id> --tags phones   # теги для ACL (kai peer list — id)
 sec run home-kai -- kai events                        # журнал
 kai lock init && kai lock sign    # network lock (ed25519-ключ остаётся на этой машине)
 
