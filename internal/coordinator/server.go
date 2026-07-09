@@ -183,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/admin/static-peers", s.withAdmin(s.handleStaticPeerCreate))
 	mux.HandleFunc("GET /v1/admin/static-peers", s.withAdmin(s.handleStaticPeerList))
 	mux.HandleFunc("GET /v1/admin/static-peers/{id}/config", s.withAdmin(s.handleStaticPeerConfig))
+	mux.HandleFunc("POST /v1/admin/static-peers/{id}/tags", s.withAdmin(s.handleStaticPeerTags))
 	mux.HandleFunc("DELETE /v1/admin/static-peers/{id}", s.withAdmin(s.handleStaticPeerDelete))
 	mux.HandleFunc("POST /v1/admin/publishes", s.withAdmin(s.handlePublishCreate))
 	mux.HandleFunc("GET /v1/admin/publishes", s.withAdmin(s.handlePublishList))

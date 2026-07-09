@@ -81,3 +81,41 @@ func TestACLFlow(t *testing.T) {
 	}
 	_ = hub
 }
+
+// Static peers (phones) participate in ACL policies via tags, same as nodes.
+func TestStaticPeerTags(t *testing.T) {
+	ts := newTestServer(t)
+	enroll(t, ts, createToken(t, ts), api.RoleHub)
+	web := enroll(t, ts, createToken(t, ts), api.RoleNode) // 100.87.0.2 — destination
+
+	var sp api.StaticPeerCreateResponse
+	call(t, ts, "POST", "/v1/admin/static-peers", adminToken, api.StaticPeerCreateRequest{Name: "iphone"}, &sp)
+
+	if code := call(t, ts, "POST", "/v1/admin/static-peers/"+sp.ID+"/tags", adminToken,
+		api.TagsRequest{Tags: []string{"Phones"}}, nil); code != 204 {
+		t.Fatalf("peer tag: %d", code)
+	}
+	var peers []api.StaticPeerInfo
+	call(t, ts, "GET", "/v1/admin/static-peers", adminToken, nil, &peers)
+	if len(peers) != 1 || len(peers[0].Tags) != 1 || peers[0].Tags[0] != "phones" {
+		t.Fatalf("peer tags not normalized/listed: %+v", peers)
+	}
+
+	// Policy phones → web: the phone's /32 must land in web's filter rules.
+	call(t, ts, "POST", "/v1/admin/nodes/"+web.NodeID+"/tags", adminToken, api.TagsRequest{Tags: []string{"web"}}, nil)
+	call(t, ts, "POST", "/v1/admin/policies", adminToken, api.PolicyCreateRequest{
+		Name: "phones-to-web", SrcTags: []string{"phones"}, DstTags: []string{"web"}, Enabled: true,
+	}, nil)
+	var nm api.Netmap
+	call(t, ts, "GET", "/v1/netmap?since=0", web.AuthSecret, nil, &nm)
+	if !nm.Self.FilterEnabled || len(nm.FilterRules) != 1 ||
+		len(nm.FilterRules[0].SrcCIDRs) != 1 || nm.FilterRules[0].SrcCIDRs[0] != sp.OverlayIP+"/32" {
+		t.Fatalf("phone must be an allowed source: %+v", nm.FilterRules)
+	}
+
+	// Unknown peer id → 404.
+	if code := call(t, ts, "POST", "/v1/admin/static-peers/sp_nope/tags", adminToken,
+		api.TagsRequest{Tags: []string{"x"}}, nil); code != 404 {
+		t.Fatalf("tagging a ghost peer: %d", code)
+	}
+}

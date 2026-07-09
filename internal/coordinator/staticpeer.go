@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaidstor/home-kai/internal/api"
 	"github.com/kaidstor/home-kai/internal/coordinator/store"
+	"github.com/kaidstor/home-kai/internal/text"
 	"github.com/kaidstor/home-kai/internal/wgkeys"
 )
 
@@ -83,6 +84,31 @@ func (s *Server) handleStaticPeerList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, toAPIStaticPeer(p))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleStaticPeerTags mirrors handleNodeTags: tags group devices for ACL
+// policies, and static peers (phones) participate as sources/destinations.
+func (s *Server) handleStaticPeerTags(w http.ResponseWriter, r *http.Request) {
+	sp, ok := s.staticPeerOr404(w, r)
+	if !ok {
+		return
+	}
+	var req api.TagsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+		return
+	}
+	tags := normalizeTags(req.Tags)
+	if err := s.store.SetStaticPeerTags(sp.ID, tags); err != nil {
+		s.errInternal(w, err)
+		return
+	}
+	if _, err := s.bumpNetmap(); err != nil {
+		s.errInternal(w, err)
+		return
+	}
+	s.logEvent(evStaticPeerTags, "admin", fmt.Sprintf("static peer %s: заданы теги: %s", sp.Name, text.JoinCSV(tags)))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleStaticPeerConfig(w http.ResponseWriter, r *http.Request) {

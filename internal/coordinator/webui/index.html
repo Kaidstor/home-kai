@@ -148,7 +148,7 @@
       <p class="muted" style="margin-top:-6px">iPhone / Android / роутер: официальный WireGuard-клиент, всегда через хаб.</p>
       <div class="tablewrap"><table id="peersTable" hidden>
         <thead><tr>
-          <th>Имя</th><th>Overlay IP</th><th>DNS</th><th>Создан</th><th></th>
+          <th>Имя</th><th>Overlay IP</th><th>DNS</th><th>Теги</th><th>Создан</th><th></th>
         </tr></thead>
         <tbody></tbody>
       </table></div>
@@ -401,16 +401,21 @@ function renderPeers(peers) {
   $('#peerCount').textContent = peers.length ? '· ' + peers.length : '';
   table.hidden = peers.length === 0;
   $('#peersEmpty').hidden = peers.length !== 0;
-  tbody.innerHTML = peers.map(p => `<tr>
+  tbody.innerHTML = peers.map(p => {
+    const tags = (p.tags || []).map(t => `<span class="badge">${esc(t)}</span>`).join(' ') || '<span class="muted">—</span>';
+    return `<tr>
     <td>${esc(p.name)}</td>
     <td class="mono copyable" data-copy="${esc(p.overlay_ip)}" title="Скопировать">${esc(p.overlay_ip)}</td>
     <td class="mono">${p.dns_name ? esc(p.dns_name) : '<span class="muted">—</span>'}</td>
+    <td>${tags}</td>
     <td title="${esc(p.created_at)}">${rel(p.created_at)}</td>
     <td>
       <button class="small" data-conf="${esc(p.id)}">конфиг / QR</button>
+      <button class="small" data-tag-peer="${esc(p.id)}" data-name="${esc(p.name)}" data-tags="${esc((p.tags||[]).join(','))}">теги</button>
       <button class="small danger" data-del-peer="${esc(p.id)}" data-name="${esc(p.name)}">удалить</button>
     </td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 
 // Перерисовка только при изменении данных: иначе автообновление раз в 15 с
@@ -632,13 +637,15 @@ document.addEventListener('click', async e => {
     catch (err) { alert('Ошибка: ' + err.message); }
     return;
   }
-  if (t.dataset.tagNode) {
+  if (t.dataset.tagNode || t.dataset.tagPeer) {
     const cur = t.dataset.tags || '';
     const val = prompt(`Теги для «${t.dataset.name}» (через запятую):`, cur);
     if (val === null) return;
+    const path = t.dataset.tagNode
+      ? '/v1/admin/nodes/' + encodeURIComponent(t.dataset.tagNode) + '/tags'
+      : '/v1/admin/static-peers/' + encodeURIComponent(t.dataset.tagPeer) + '/tags';
     try {
-      await api('POST', '/v1/admin/nodes/' + encodeURIComponent(t.dataset.tagNode) + '/tags',
-        {tags: splitTags(val)});
+      await api('POST', path, {tags: splitTags(val)});
       await refresh(true);
     } catch (err) { alert('Ошибка: ' + err.message); }
     return;
