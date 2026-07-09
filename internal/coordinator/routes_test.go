@@ -163,8 +163,10 @@ func TestStaticPeerFullTunnel(t *testing.T) {
 		api.StaticPeerCreateRequest{Name: "phone", Full: true}, &created); code != 200 {
 		t.Fatalf("create: %d", code)
 	}
+	// Both modes point DNS at the hub's overlay resolver (with the kai search
+	// domain), so phones resolve *.kai names.
 	if !strings.Contains(created.ConfINI, "AllowedIPs = 0.0.0.0/0") ||
-		!strings.Contains(created.ConfINI, "DNS = 1.1.1.1") {
+		!strings.Contains(created.ConfINI, "DNS = 100.87.0.1, kai") {
 		t.Fatalf("full conf:\n%s", created.ConfINI)
 	}
 
@@ -175,7 +177,8 @@ func TestStaticPeerFullTunnel(t *testing.T) {
 		t.Fatalf("full re-render differs:\n%s\nvs\n%s", conf.ConfINI, created.ConfINI)
 	}
 	call(t, ts, "GET", "/v1/admin/static-peers/"+created.ID+"/config", adminToken, nil, &conf)
-	if !strings.Contains(conf.ConfINI, "AllowedIPs = 100.87.0.0/16") || strings.Contains(conf.ConfINI, "DNS =") {
+	if !strings.Contains(conf.ConfINI, "AllowedIPs = 100.87.0.0/16") ||
+		!strings.Contains(conf.ConfINI, "DNS = 100.87.0.1, kai") {
 		t.Fatalf("split conf:\n%s", conf.ConfINI)
 	}
 }

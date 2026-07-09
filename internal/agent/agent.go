@@ -79,6 +79,7 @@ type Agent struct {
 	log       *slog.Logger
 	overlay   netip.Prefix   // parsed st.OverlayCIDR, set in Run
 	natRules  []iptablesRule // installed firewall rules, removed on shutdown
+	dns       *dnsProxy      // hub-only *.kai resolver, nil on spokes
 
 	// applyMu serializes applyNetmap end-to-end (device, routes, hosts,
 	// filter) and every state-file write: the sync loop and the probe loop
@@ -143,6 +144,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err := a.setupHubNAT(); err != nil {
 			a.log.Error("hub NAT setup failed — relaying/exit may not work", "err", err)
 		}
+		// Overlay DNS: *.kai names for static peers (phones) that cannot use
+		// the managed /etc/hosts block. Best-effort — names degrade, tunnels don't.
+		a.dns = newDNSProxy(a.log)
+		go a.dns.serve(ctx, addr)
 	}
 	if len(a.st.AdvertiseRoutes) > 0 {
 		if err := a.setupSubnetRouter(); err != nil {
@@ -267,6 +272,9 @@ func (a *Agent) applyNetmap(nm *api.Netmap) error {
 	a.syncHosts(nm.Hosts)
 	if a.st.Role == api.RoleHub {
 		a.syncPublishes(nm.Publishes)
+		if a.dns != nil {
+			a.dns.setHosts(nm.Hosts)
+		}
 	}
 	a.syncFilter(nm)
 	// Cache the netmap so the data plane comes back after a reboot even with
@@ -286,6 +294,15 @@ func (a *Agent) applyNetmap(nm *api.Netmap) error {
 // abort the apply: degrade to the previous rules with a logged error.
 func (a *Agent) syncFilter(nm *api.Netmap) {
 	rules := nm.FilterRules
+	if nm.Self.FilterEnabled && a.st.Role == api.RoleHub && a.dns != nil {
+		// The hub's DNS responder is infrastructure, like the tunnels
+		// themselves: phones and nodes must resolve *.kai regardless of admin
+		// policies, so an allow-rule for port 53 is always prepended.
+		rules = append([]api.FilterRule{
+			{SrcCIDRs: []string{a.st.OverlayCIDR}, Protocol: "udp", Ports: []string{"53"}},
+			{SrcCIDRs: []string{a.st.OverlayCIDR}, Protocol: "tcp", Ports: []string{"53"}},
+		}, rules...)
+	}
 	key := fmt.Sprintf("%v|%+v", nm.Self.FilterEnabled, rules)
 	if key == a.lastFilter {
 		return

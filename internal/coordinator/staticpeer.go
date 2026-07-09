@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -64,8 +65,8 @@ func (s *Server) handleStaticPeerCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conf := renderStaticPeerConf(pair.Private.String(), sp.OverlayIP, hub.WGPubKey,
-		s.cfg.HubEndpoint, s.cfg.OverlayCIDR.Masked().String(), req.Full)
+	conf := renderStaticPeerConf(pair.Private.String(), sp.OverlayIP, hub, s.cfg.HubEndpoint,
+		s.cfg.OverlayCIDR.Masked().String(), req.Full)
 	s.log.Info("static peer created", "name", sp.Name, "ip", sp.OverlayIP, "dns", dnsName, "full", req.Full)
 	s.logEvent(evStaticPeerCreate, "admin", fmt.Sprintf("static peer %s (%s) создан", sp.Name, sp.OverlayIP))
 	writeJSON(w, http.StatusOK, api.StaticPeerCreateResponse{
@@ -126,8 +127,8 @@ func (s *Server) handleStaticPeerConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	full := r.URL.Query().Get("full") == "1"
-	conf := renderStaticPeerConf(sp.WGPrivKey, sp.OverlayIP, hub.WGPubKey,
-		s.cfg.HubEndpoint, s.cfg.OverlayCIDR.Masked().String(), full)
+	conf := renderStaticPeerConf(sp.WGPrivKey, sp.OverlayIP, hub, s.cfg.HubEndpoint,
+		s.cfg.OverlayCIDR.Masked().String(), full)
 	png, err := qrcode.Encode(conf, qrcode.Medium, 320)
 	if err != nil {
 		s.errInternal(w, err)
@@ -181,12 +182,18 @@ func (s *Server) hubNode() (*store.Node, error) {
 // and the hub masquerades it out. IPv6 stays outside the tunnel on purpose —
 // the overlay is v4-only and blackholing ::/0 would slow every dual-stack
 // site down instead of failing over.
-func renderStaticPeerConf(privKey, addr, hubPubKey, hubEndpoint, overlayCIDR string, full bool) string {
-	allowed, dns := overlayCIDR, ""
+//
+// DNS points at the hub's overlay address: the hub agent answers *.kai names
+// from the netmap and forwards everything else upstream, so phones reach
+// devices by name (`nas.kai`, or bare `nas` via the search domain).
+func renderStaticPeerConf(privKey, addr string, hub *store.Node, hubEndpoint, overlayCIDR string, full bool) string {
+	allowed := overlayCIDR
 	if full {
 		allowed = "0.0.0.0/0"
-		dns = "DNS = 1.1.1.1, 8.8.8.8\n"
 	}
+	// Non-IP entries in the DNS line are search domains (wg-quick semantics,
+	// supported by the iOS/Android apps).
+	dns := fmt.Sprintf("DNS = %s, %s\n", hub.OverlayIP, strings.TrimPrefix(api.HostsSuffix, "."))
 	return fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32
@@ -196,5 +203,5 @@ PublicKey = %s
 Endpoint = %s
 AllowedIPs = %s
 PersistentKeepalive = %d
-`, privKey, addr, dns, hubPubKey, hubEndpoint, allowed, KeepaliveSec)
+`, privKey, addr, dns, hub.WGPubKey, hubEndpoint, allowed, KeepaliveSec)
 }
