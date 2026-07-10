@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -145,6 +146,9 @@ func main() {
 	}, st, provider, log)
 
 	handler := srv.Handler()
+
+	// Devices enrolled before DNS was configured get their names on start.
+	go srv.BackfillDNS(context.Background())
 
 	// Optional UI listener with a publicly trusted cert (hot-reloaded from
 	// disk — LE short-lived certs rotate without a coordinator restart).

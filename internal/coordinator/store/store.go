@@ -275,6 +275,16 @@ func (s *Store) SetNodeTags(id string, tags []string) error {
 	return s.execOne(`UPDATE nodes SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
 }
 
+// SetNodeDNSName records a backfilled public DNS name (devices enrolled
+// before a DNS provider was configured).
+func (s *Store) SetNodeDNSName(id, name string) error {
+	return s.execOne(`UPDATE nodes SET dns_name = ? WHERE id = ?`, name, id)
+}
+
+func (s *Store) SetStaticPeerDNSName(id, name string) error {
+	return s.execOne(`UPDATE static_peers SET dns_name = ? WHERE id = ?`, name, id)
+}
+
 func (s *Store) SetStaticPeerTags(id string, tags []string) error {
 	return s.execOne(`UPDATE static_peers SET tags = ? WHERE id = ?`, text.JoinCSV(tags), id)
 }

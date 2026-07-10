@@ -312,6 +312,55 @@ func (s *Server) ensureDNS(ctx context.Context, ip string) string {
 	return fqdn
 }
 
+// BackfillDNS assigns DNS names to devices that lack one — those enrolled
+// before a DNS provider was configured. Runs once per start; a failed device
+// is retried on the next restart (ensureDNS never blocks the caller).
+func (s *Server) BackfillDNS(ctx context.Context) {
+	if s.cfg.Domain == "" {
+		return
+	}
+	changed := false
+	if nodes, err := s.store.Nodes(); err == nil {
+		for _, n := range nodes {
+			if n.DNSName != "" {
+				continue
+			}
+			fqdn := s.ensureDNS(ctx, n.OverlayIP)
+			if fqdn == "" {
+				continue
+			}
+			if err := s.store.SetNodeDNSName(n.ID, fqdn); err != nil {
+				s.log.Warn("dns backfill: store update failed", "node", n.Name, "err", err)
+				continue
+			}
+			s.log.Info("dns name backfilled", "node", n.Name, "fqdn", fqdn)
+			changed = true
+		}
+	}
+	if statics, err := s.store.StaticPeers(); err == nil {
+		for _, p := range statics {
+			if p.DNSName != "" {
+				continue
+			}
+			fqdn := s.ensureDNS(ctx, p.OverlayIP)
+			if fqdn == "" {
+				continue
+			}
+			if err := s.store.SetStaticPeerDNSName(p.ID, fqdn); err != nil {
+				s.log.Warn("dns backfill: store update failed", "peer", p.Name, "err", err)
+				continue
+			}
+			s.log.Info("dns name backfilled", "peer", p.Name, "fqdn", fqdn)
+			changed = true
+		}
+	}
+	if changed {
+		if _, err := s.bumpNetmap(); err != nil {
+			s.log.Warn("dns backfill: netmap bump failed", "err", err)
+		}
+	}
+}
+
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
