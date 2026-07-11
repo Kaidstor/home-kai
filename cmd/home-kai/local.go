@@ -93,7 +93,7 @@ func cmdPing(ctx context.Context, args []string) {
 			}
 		}
 		if ip == "" {
-			fatal(fmt.Errorf("unknown device %q (try `kai status`)", target))
+			fatal(fmt.Errorf("unknown device %q (try `home-kai status`)", target))
 		}
 	}
 

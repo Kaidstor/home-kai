@@ -86,20 +86,20 @@ func cmdLockInit(ctx context.Context, keyPath string) {
 	if _, err := client().Do(ctx, http.MethodPost, "/v1/admin/lock", api.LockInitRequest{PublicKey: pub}, nil); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("lock armed with key %s\nnow run: kai lock sign\n", pub)
+	fmt.Printf("lock armed with key %s\nnow run: home-kai lock sign\n", pub)
 }
 
 func cmdLockSign(ctx context.Context, keyPath string) {
 	priv, err := loadLockKey(keyPath)
 	if err != nil {
-		fatal(fmt.Errorf("lock key: %w (run `kai lock init` first)", err))
+		fatal(fmt.Errorf("lock key: %w (run `home-kai lock init` first)", err))
 	}
 	var st api.LockStatus
 	if _, err := client().Do(ctx, http.MethodGet, "/v1/admin/lock", nil, &st); err != nil {
 		fatal(err)
 	}
 	if !st.Enabled {
-		fatal(fmt.Errorf("lock is not initialized — run `kai lock init`"))
+		fatal(fmt.Errorf("lock is not initialized — run `home-kai lock init`"))
 	}
 	if len(st.Pending) == 0 {
 		fmt.Println("nothing to sign")
@@ -140,6 +140,6 @@ func cmdLockStatus(ctx context.Context) {
 		fmt.Printf("  pending: %-6s %-20s %s (%s)\n", b.Kind, b.Name, b.OverlayIP, b.ID)
 	}
 	if st.Enabled && len(st.Pending) > 0 {
-		fmt.Println("run `kai lock sign` to sign them")
+		fmt.Println("run `home-kai lock sign` to sign them")
 	}
 }

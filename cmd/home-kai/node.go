@@ -41,8 +41,8 @@ func cmdNodeDelete(ctx context.Context, args []string) {
 
 // cmdNodeRoutes enables subnet routes advertised by a node:
 //
-//	kai node routes <node_id> --enable 192.168.1.0/24,172.18.0.0/16
-//	kai node routes <node_id> --enable ""        # disable all
+//	home-kai node routes <node_id> --enable 192.168.1.0/24,172.18.0.0/16
+//	home-kai node routes <node_id> --enable ""        # disable all
 func cmdNodeRoutes(ctx context.Context, args []string) {
 	if len(args) < 1 || args[0] == "" || args[0][0] == '-' {
 		usage()

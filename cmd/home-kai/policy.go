@@ -15,9 +15,9 @@ import (
 
 // cmdPolicy manages ACL policies:
 //
-//	kai policy list
-//	kai policy create <name> --from tagA,tagB --to tagC --proto tcp --ports 22,443 [--disabled]
-//	kai policy delete <id>
+//	home-kai policy list
+//	home-kai policy create <name> --from tagA,tagB --to tagC --proto tcp --ports 22,443 [--disabled]
+//	home-kai policy delete <id>
 func cmdPolicy(ctx context.Context, args []string) {
 	sub := ""
 	if len(args) > 0 {
@@ -38,7 +38,7 @@ func cmdPolicy(ctx context.Context, args []string) {
 		w.Flush()
 	case "create":
 		if len(args) < 2 || args[1] == "" || args[1][0] == '-' {
-			fatal(fmt.Errorf("usage: kai policy create <name> --from ... --to ... [--proto tcp] [--ports 22,443] [--disabled]"))
+			fatal(fmt.Errorf("usage: home-kai policy create <name> --from ... --to ... [--proto tcp] [--ports 22,443] [--disabled]"))
 		}
 		name := args[1]
 		fs := flag.NewFlagSet("policy create", flag.ExitOnError)
@@ -65,6 +65,6 @@ func cmdPolicy(ctx context.Context, args []string) {
 		}
 		fmt.Println("deleted", args[1])
 	default:
-		fatal(fmt.Errorf("usage: kai policy list|create|delete"))
+		fatal(fmt.Errorf("usage: home-kai policy list|create|delete"))
 	}
 }

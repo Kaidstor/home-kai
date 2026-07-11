@@ -1,11 +1,11 @@
-// kai is the admin CLI for the coordinator.
+// home-kai is the admin CLI for the coordinator.
 //
 // Admin commands read the connection settings from env:
 //
 //	KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT
 //
-// `kai status` / `kai ping` talk to the local kai-agent unix socket instead
-// and need no credentials. Run kai without arguments for the command list.
+// `home-kai status` / `home-kai ping` talk to the local kai-agent unix socket instead
+// and need no credentials. Run home-kai without arguments for the command list.
 package main
 
 import (
@@ -64,20 +64,20 @@ func arg(i int) string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  kai token create [--name HINT] [--ttl SECONDS]
-  kai node list
-  kai node delete <node_id>
-  kai node routes <node_id> --enable CIDR,CIDR
-  kai node approve <node_id>
-  kai node tag <node_id> --tags a,b
-  kai policy list|create|delete ...
-  kai events [--limit N]
-  kai peer create <name> [--png FILE] [--full]
-  kai peer list
-  kai peer tag <peer_id> --tags a,b
-  kai status                # local agent view: peers, direct/relay, traffic
-  kai ping <name|ip>        # resolve device name, ping, show path
-  kai lock init|sign|status|disable [--key FILE]   # network lock (signed peer bindings)
+  home-kai token create [--name HINT] [--ttl SECONDS]
+  home-kai node list
+  home-kai node delete <node_id>
+  home-kai node routes <node_id> --enable CIDR,CIDR
+  home-kai node approve <node_id>
+  home-kai node tag <node_id> --tags a,b
+  home-kai policy list|create|delete ...
+  home-kai events [--limit N]
+  home-kai peer create <name> [--png FILE] [--full]
+  home-kai peer list
+  home-kai peer tag <peer_id> --tags a,b
+  home-kai status                # local agent view: peers, direct/relay, traffic
+  home-kai ping <name|ip>        # resolve device name, ping, show path
+  home-kai lock init|sign|status|disable [--key FILE]   # network lock (signed peer bindings)
 
 admin commands need env: KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT;
 status/ping talk to the local kai-agent socket instead.`)
@@ -102,6 +102,6 @@ func client() *apiclient.Client {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "kai:", err)
+	fmt.Fprintln(os.Stderr, "home-kai:", err)
 	os.Exit(1)
 }

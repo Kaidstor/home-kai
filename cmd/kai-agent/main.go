@@ -91,7 +91,7 @@ func cmdUp(args []string) {
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if *coordinatorURL == "" || *token == "" || *fingerprint == "" {
-			fatal(fmt.Errorf("not enrolled: --coordinator, --token and --fingerprint are required (see `kai token create`)"))
+			fatal(fmt.Errorf("not enrolled: --coordinator, --token and --fingerprint are required (see `home-kai token create`)"))
 		}
 		role := api.RoleNode
 		if *hub {
@@ -172,7 +172,7 @@ func cmdRekey(args []string) {
 		fatal(err)
 	}
 	if st.LockPublicKey != "" {
-		fatal(fmt.Errorf("network lock is enabled: rotate, then run `kai lock sign` before starting the agent"))
+		fatal(fmt.Errorf("network lock is enabled: rotate, then run `home-kai lock sign` before starting the agent"))
 	}
 	if err := agent.RotateStateKey(context.Background(), st, *statePath); err != nil {
 		fatal(err)

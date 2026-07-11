@@ -25,7 +25,7 @@ test:
 
 # Залить бинари на VPS (rsync: временный файл + rename, поэтому безопасно поверх работающего бинаря)
 deploy-vps: build-linux
-    rsync -az bin/linux-amd64/kai-coordinator bin/linux-amd64/kai-agent bin/linux-amd64/kai {{vps}}:/usr/local/bin/
+    rsync -az bin/linux-amd64/kai-coordinator bin/linux-amd64/kai-agent bin/linux-amd64/home-kai {{vps}}:/usr/local/bin/
     ssh {{vps}} 'systemctl restart kai-coordinator kai-agent 2>/dev/null || true'
 
 # Первичная установка на VPS: конфиг-каталоги, systemd-юниты, sysctl

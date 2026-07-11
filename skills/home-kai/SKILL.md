@@ -9,7 +9,7 @@ metadata:
 
 `kai` — админский CLI координатора home-kai. Команды двух типов:
 
-- **Локальные** (`kai status`, `kai ping`) — ходят в unix-socket агента `kai-agent` на этой же машине, креды не нужны.
+- **Локальные** (`home-kai status`, `home-kai ping`) — ходят в unix-socket агента `kai-agent` на этой же машине, креды не нужны.
 - **Админские** (всё остальное) — ходят в admin API координатора и требуют env-переменных:
 
 ```sh
@@ -27,43 +27,43 @@ export KAI_FINGERPRINT=sha256:...             # отпечаток TLS: journalc
 ## Команды
 
 ```
-kai token create [--name HINT] [--ttl SECONDS]        # одноразовый enroll-токен + готовая join-команда (ttl по умолчанию 3600)
-kai node list                                          # узлы: id, имя, overlay-IP, online, теги, маршруты
-kai node delete <node_id>
-kai node routes <node_id> --enable CIDR,CIDR           # включить подмножество анонсированных узлом подсетей
-kai node approve <node_id>                             # одобрить узел (при require_approval = true)
-kai node tag <node_id> --tags a,b                      # теги для ACL (пустое значение очищает)
-kai policy list
-kai policy create <name> --from tagA --to tagB [--proto any|tcp|udp|icmp] [--ports 22,443] [--disabled]
-kai policy delete <id>
-kai events [--limit N]                                 # журнал координатора (enroll/approve/routes/policy/…)
-kai peer create <name> [--png FILE] [--full]           # static peer: конфиг WireGuard + QR; --full = exit node (весь трафик через хаб)
-kai peer list
-kai peer tag <peer_id> --tags a,b
-kai status                                             # локально: пиры, путь direct/relay, handshake, rx/tx
-kai ping <name|ip>                                     # резолв имени устройства + ping + путь
-kai lock init|sign|status|disable [--key FILE]         # network lock: подписанные привязки пиров
+home-kai token create [--name HINT] [--ttl SECONDS]        # одноразовый enroll-токен + готовая join-команда (ttl по умолчанию 3600)
+home-kai node list                                          # узлы: id, имя, overlay-IP, online, теги, маршруты
+home-kai node delete <node_id>
+home-kai node routes <node_id> --enable CIDR,CIDR           # включить подмножество анонсированных узлом подсетей
+home-kai node approve <node_id>                             # одобрить узел (при require_approval = true)
+home-kai node tag <node_id> --tags a,b                      # теги для ACL (пустое значение очищает)
+home-kai policy list
+home-kai policy create <name> --from tagA --to tagB [--proto any|tcp|udp|icmp] [--ports 22,443] [--disabled]
+home-kai policy delete <id>
+home-kai events [--limit N]                                 # журнал координатора (enroll/approve/routes/policy/…)
+home-kai peer create <name> [--png FILE] [--full]           # static peer: конфиг WireGuard + QR; --full = exit node (весь трафик через хаб)
+home-kai peer list
+home-kai peer tag <peer_id> --tags a,b
+home-kai status                                             # локально: пиры, путь direct/relay, handshake, rx/tx
+home-kai ping <name|ip>                                     # резолв имени устройства + ping + путь
+home-kai lock init|sign|status|disable [--key FILE]         # network lock: подписанные привязки пиров
 ```
 
 ## Типовые сценарии
 
 **Подключить новый узел (Linux/macOS):**
 
-1. `kai token create --name <имя>` — команда печатает токен и готовую join-команду.
+1. `home-kai token create --name <имя>` — команда печатает токен и готовую join-команду.
 2. На новом узле под root: `sudo kai-agent up --coordinator $KAI_URL --token <...> --fingerprint <...>`
    (полезные флаги: `--advertise-routes CIDR,CIDR`, `--rekey-days N`, `--no-hosts`).
-3. Если у координатора `require_approval = true` — узел висит без доступа до `kai node approve <node_id>` (id смотри в `kai node list`).
-4. Если включён network lock — новое устройство не заработает до `kai lock sign` с админской машины.
+3. Если у координатора `require_approval = true` — узел висит без доступа до `home-kai node approve <node_id>` (id смотри в `home-kai node list`).
+4. Если включён network lock — новое устройство не заработает до `home-kai lock sign` с админской машины.
 
-**Подключить телефон/роутер (static peer):** `kai peer create iphone --png iphone.png` — QR сканируется официальным WireGuard-клиентом. `--full` — полный туннель (exit node через хаб). Имена `*.kai` на static peers работают через DNS-резолвер хаба (прописан в конфиге автоматически).
+**Подключить телефон/роутер (static peer):** `home-kai peer create iphone --png iphone.png` — QR сканируется официальным WireGuard-клиентом. `--full` — полный туннель (exit node через хаб). Имена `*.kai` на static peers работают через DNS-резолвер хаба (прописан в конфиге автоматически).
 
-**Включить subnet router:** узел анонсирует LAN (`kai-agent up --advertise-routes 192.168.1.0/24`), но в netmap подсеть попадает только после `kai node routes <node_id> --enable 192.168.1.0/24`.
+**Включить subnet router:** узел анонсирует LAN (`kai-agent up --advertise-routes 192.168.1.0/24`), но в netmap подсеть попадает только после `home-kai node routes <node_id> --enable 192.168.1.0/24`.
 
-**Настроить ACL:** проставь теги (`kai node tag`, `kai peer tag`), затем `kai policy create web-ssh --from admin --to web --proto tcp --ports 22`. ⚠️ Первая же включённая политика переводит сеть в режим default-deny — всё, что явно не разрешено, блокируется (enforcement на Linux-агентах через iptables-цепочку `KAI-FILTER`; macOS не enforce'ит). Проверяй, что нужные пары тегов покрыты, прежде чем включать.
+**Настроить ACL:** проставь теги (`home-kai node tag`, `home-kai peer tag`), затем `home-kai policy create web-ssh --from admin --to web --proto tcp --ports 22`. ⚠️ Первая же включённая политика переводит сеть в режим default-deny — всё, что явно не разрешено, блокируется (enforcement на Linux-агентах через iptables-цепочку `KAI-FILTER`; macOS не enforce'ит). Проверяй, что нужные пары тегов покрыты, прежде чем включать.
 
-**Network lock:** `kai lock init` (создаёт ed25519-ключ — сразу предложи пользователю забэкапить `~/.config/kai/lock.key`), затем `kai lock sign`. После добавления устройств или ротации WG-ключей подписи надо обновлять повторным `kai lock sign`. `kai lock status` — проверка, `kai lock disable` — откат.
+**Network lock:** `home-kai lock init` (создаёт ed25519-ключ — сразу предложи пользователю забэкапить `~/.config/kai/lock.key`), затем `home-kai lock sign`. После добавления устройств или ротации WG-ключей подписи надо обновлять повторным `home-kai lock sign`. `home-kai lock status` — проверка, `home-kai lock disable` — откат.
 
-**Диагностика:** `kai status` показывает путь до каждого пира (`direct` = p2p, `relay` = через хаб), время handshake и трафик; `kai ping nas` — резолв имени + путь + ping. Data plane живёт независимо от координатора: если координатор лежит, туннели продолжают работать на кэшированном netmap.
+**Диагностика:** `home-kai status` показывает путь до каждого пира (`direct` = p2p, `relay` = через хаб), время handshake и трафик; `home-kai ping nas` — резолв имени + путь + ping. Data plane живёт независимо от координатора: если координатор лежит, туннели продолжают работать на кэшированном netmap.
 
 ## Ориентиры
 

@@ -17,7 +17,7 @@ Zero-dependency: три статических Go-бинаря, состояни
 | `kai-agent` | каждый узел (Linux/macOS, root) | WireGuard-интерфейс, синхронизация пиров, p2p-prober, subnet router, /etc/hosts-имена, funnel-форвардеры (на хабе), кэш netmap |
 | `kai` | админская машина | токены, узлы/маршруты, static peers с QR, публикации, `status`/`ping`, network lock |
 
-Базовая топология — hub-and-spoke: узлы держат исходящий туннель к хабу (VPS), хаб форвардит. Наружу открыт только VPS: TCP 8443 (координатор) и UDP 51820 (WireGuard). iPhone/Android/роутер подключаются официальным WireGuard-клиентом (`kai peer create` → QR).
+Базовая топология — hub-and-spoke: узлы держат исходящий туннель к хабу (VPS), хаб форвардит. Наружу открыт только VPS: TCP 8443 (координатор) и UDP 51820 (WireGuard). iPhone/Android/роутер подключаются официальным WireGuard-клиентом (`home-kai peer create` → QR).
 
 Ключевые свойства:
 - **Data plane независим от control plane**: координатор может лежать — туннели работают (netmap кэшируется в state-файле агента).
@@ -26,16 +26,16 @@ Zero-dependency: три статических Go-бинаря, состояни
 
 ## Фичи
 
-- **Прямые p2p-соединения (M3).** Споки получают друг друга в netmap с кандидатами (LAN-адреса + reflexive-адреса, которые хаб видит по keepalive). Prober агента ставит пира с *пустыми* AllowedIPs — handshake пробивает NAT (обе стороны инициируют одновременно), а relay-путь через хаб не рвётся. После подтверждения пир получает свой `/32`, который побеждает `/16` хаба по longest prefix; стух handshake (>3 мин) — мгновенный откат на хаб. Путь виден в `kai status` (`direct`/`relay`).
-- **Subnet router.** `kai-agent up --advertise-routes 192.168.1.0/24` — узел предлагает роутить свою LAN; в netmap подсеть попадает только после включения админом (UI-чекбокс или `kai node routes <id> --enable ...`). Анонсирующий узел сам включает форвардинг и ставит MASQUERADE/FORWARD-правила (DOCKER-USER-совместимо); агенты пропускают маршрут, если он конфликтует с их локальной сетью (docker-бриджи!).
+- **Прямые p2p-соединения (M3).** Споки получают друг друга в netmap с кандидатами (LAN-адреса + reflexive-адреса, которые хаб видит по keepalive). Prober агента ставит пира с *пустыми* AllowedIPs — handshake пробивает NAT (обе стороны инициируют одновременно), а relay-путь через хаб не рвётся. После подтверждения пир получает свой `/32`, который побеждает `/16` хаба по longest prefix; стух handshake (>3 мин) — мгновенный откат на хаб. Путь виден в `home-kai status` (`direct`/`relay`).
+- **Subnet router.** `kai-agent up --advertise-routes 192.168.1.0/24` — узел предлагает роутить свою LAN; в netmap подсеть попадает только после включения админом (UI-чекбокс или `home-kai node routes <id> --enable ...`). Анонсирующий узел сам включает форвардинг и ставит MASQUERADE/FORWARD-правила (DOCKER-USER-совместимо); агенты пропускают маршрут, если он конфликтует с их локальной сетью (docker-бриджи!).
 - **Имена устройств.** Каждый агент ведёт блок в `/etc/hosts`: `ssh user@nas.kai`. Работает офлайн, без своего DNS. Отключается `--no-hosts`. Для static peers (телефоны/роутеры), где `/etc/hosts` недоступен, хаб поднимает DNS-резолвер на своём overlay-IP: отвечает на `*.kai` из netmap, остальное форвардит в 1.1.1.1/8.8.8.8; конфиг static peer прописывает его в `DNS =` вместе с search-доменом `kai` — с телефона работает и `nas.kai`, и просто `nas`.
-- **Exit node для static peers.** Тумблер «полный туннель» в UI (или `kai peer create имя --full`): конфиг с `AllowedIPs 0.0.0.0/0` — весь трафик телефона идёт через VPS (хаб маскарадит наружу). IPv6 сознательно не заворачивается.
+- **Exit node для static peers.** Тумблер «полный туннель» в UI (или `home-kai peer create имя --full`): конфиг с `AllowedIPs 0.0.0.0/0` — весь трафик телефона идёт через VPS (хаб маскарадит наружу). IPv6 сознательно не заворачивается.
 - **Публикации (funnel).** TCP-проброс с публичного порта VPS на сервис в оверлее: `{"name":"jellyfin","listen_port":8096,"target":"nas.kai:8096"}` — хаб слушает порт и форвардит. Управление в UI или через `POST /v1/admin/publishes`.
 - **Ротация WG-ключей.** `kai-agent up --rekey-days 30` — авторотация на живом устройстве; `kai-agent rekey` — офлайн. Прерванная ротация самолечится (агент ре-ассертит ключ при старте).
-- **Network lock** (аналог tailnet lock). `kai lock init` создаёт ed25519-ключ **только на админской машине** (`~/.config/kai/lock.key` — забэкапь!), `kai lock sign` подписывает привязки (wg-ключ, overlay-IP) всех устройств. Агенты пинят ключ и отбрасывают неподписанных пиров: скомпрометированный координатор не может подсунуть своего. Новые устройства и ротации ключей требуют `kai lock sign`. `kai lock status` / `kai lock disable`.
-- **ACL-политики.** Узлам и static peers назначаются теги; политика `src-теги → dst-теги, протокол, порты` разрешает трафик. Как только появляется первая включённая политика — оверлей работает по принципу «запрещено всё, кроме явно разрешённого» (Linux-агенты ставят iptables-цепочку `KAI-FILTER` на входе `kai0`; macOS — предупреждение, без enforcement). Управление в UI («Добавить политику», кнопка «теги») или `kai policy` / `kai node tag`.
-- **Peer approval.** С `require_approval = true` в конфиге новый узел висит без доступа (никого не видит и невидим другим), пока админ не одобрит его в UI или через `kai node approve <id>`.
-- **Журнал событий.** Координатор пишет ключевые действия (enroll/approve/routes/policy/publish/lock/…) в SQLite; смотреть в панели (карточка «Журнал»), через `kai events` или `GET /v1/admin/events`. Опциональный `event_webhook` в конфиге шлёт JSON-POST на каждое событие (мост в SIEM/чат).
+- **Network lock** (аналог tailnet lock). `home-kai lock init` создаёт ed25519-ключ **только на админской машине** (`~/.config/kai/lock.key` — забэкапь!), `home-kai lock sign` подписывает привязки (wg-ключ, overlay-IP) всех устройств. Агенты пинят ключ и отбрасывают неподписанных пиров: скомпрометированный координатор не может подсунуть своего. Новые устройства и ротации ключей требуют `home-kai lock sign`. `home-kai lock status` / `home-kai lock disable`.
+- **ACL-политики.** Узлам и static peers назначаются теги; политика `src-теги → dst-теги, протокол, порты` разрешает трафик. Как только появляется первая включённая политика — оверлей работает по принципу «запрещено всё, кроме явно разрешённого» (Linux-агенты ставят iptables-цепочку `KAI-FILTER` на входе `kai0`; macOS — предупреждение, без enforcement). Управление в UI («Добавить политику», кнопка «теги») или `home-kai policy` / `home-kai node tag`.
+- **Peer approval.** С `require_approval = true` в конфиге новый узел висит без доступа (никого не видит и невидим другим), пока админ не одобрит его в UI или через `home-kai node approve <id>`.
+- **Журнал событий.** Координатор пишет ключевые действия (enroll/approve/routes/policy/publish/lock/…) в SQLite; смотреть в панели (карточка «Журнал»), через `home-kai events` или `GET /v1/admin/events`. Опциональный `event_webhook` в конфиге шлёт JSON-POST на каждое событие (мост в SIEM/чат).
 - **`/metrics`** — Prometheus-метрики (admin bearer): узлы total/online/pending, публикации, политики, версия netmap, сессии, lock.
 
 ## Адресация и доступ
@@ -56,25 +56,25 @@ Zero-dependency: три статических Go-бинаря, состояни
 
 ```sh
 # локально на любом узле (без токенов — через unix socket агента)
-kai status                        # пиры: direct/relay, handshake, rx/tx
-kai ping nas                      # резолв имени + путь + ping
+home-kai status                        # пиры: direct/relay, handshake, rx/tx
+home-kai ping nas                      # резолв имени + путь + ping
 
 # админский доступ. Секреты (KAI_URL/KAI_ADMIN_TOKEN/KAI_FINGERPRINT) держим
 # в sec, чтобы admin-токен не светился в env/истории — префикс `sec run --`
 # инъектит их в процесс. Один раз завести: admin-токен с VPS
 #   ssh root@<vps> 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN
 # (KAI_URL/KAI_FINGERPRINT — публичные, тоже кладём в sec для удобства).
-sec run home-kai -- kai node list
-sec run home-kai -- kai token create --name <имя>   # токен + join-команда
-sec run home-kai -- kai node delete <node_id>
-sec run home-kai -- kai node routes <node_id> --enable 192.168.1.0/24
-sec run home-kai -- kai node approve <node_id>       # peer approval
-sec run home-kai -- kai node tag <node_id> --tags web,prod
-sec run home-kai -- kai policy create web-ssh --from admin --to web --proto tcp --ports 22
-sec run home-kai -- kai peer create iphone [--full]   # QR; --full = exit node
-sec run home-kai -- kai peer tag <peer_id> --tags phones   # теги для ACL (kai peer list — id)
-sec run home-kai -- kai events                        # журнал
-kai lock init && kai lock sign    # network lock (ed25519-ключ остаётся на этой машине)
+sec run home-kai -- home-kai node list
+sec run home-kai -- home-kai token create --name <имя>   # токен + join-команда
+sec run home-kai -- home-kai node delete <node_id>
+sec run home-kai -- home-kai node routes <node_id> --enable 192.168.1.0/24
+sec run home-kai -- home-kai node approve <node_id>       # peer approval
+sec run home-kai -- home-kai node tag <node_id> --tags web,prod
+sec run home-kai -- home-kai policy create web-ssh --from admin --to web --proto tcp --ports 22
+sec run home-kai -- home-kai peer create iphone [--full]   # QR; --full = exit node
+sec run home-kai -- home-kai peer tag <peer_id> --tags phones   # теги для ACL (home-kai peer list — id)
+sec run home-kai -- home-kai events                        # журнал
+home-kai lock init && home-kai lock sign    # network lock (ed25519-ключ остаётся на этой машине)
 
 # подключение нового узла (Linux/macOS, root)
 sudo kai-agent up --coordinator https://vpn.example.com:8443 --token ... --fingerprint ...
@@ -116,7 +116,7 @@ listen    = ":8444"
 cert_file = "/etc/kai/ui-tls/fullchain.pem"  # LE-серт на IP, hot-reload при обновлении
 key_file  = "/etc/kai/ui-tls/privkey.pem"
 
-require_approval = false     # true → новые узлы ждут одобрения (kai node approve / кнопка в UI)
+require_approval = false     # true → новые узлы ждут одобрения (home-kai node approve / кнопка в UI)
 event_webhook    = ""        # URL: POST JSON на каждое событие журнала (SIEM/чат)
 ```
 
