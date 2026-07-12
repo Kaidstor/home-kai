@@ -218,16 +218,11 @@ func (s *Store) CreateEnrollToken(tokenHash, nameHint string, expiresAt time.Tim
 	return err
 }
 
-// ConsumeEnrollToken atomically marks a valid unused token as used and
-// returns its name hint. ErrNotFound covers unknown, expired and reused.
-func (s *Store) ConsumeEnrollToken(tokenHash string, now time.Time) (string, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
+// consumeEnrollToken marks a valid unused token as used within tx and returns
+// its name hint. ErrNotFound covers unknown, expired and reused.
+func consumeEnrollToken(tx *sql.Tx, tokenHash string, now time.Time) (string, error) {
 	var hint string
-	err = tx.QueryRow(`SELECT name_hint FROM enroll_tokens
+	err := tx.QueryRow(`SELECT name_hint FROM enroll_tokens
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`, tokenHash, now.UTC()).Scan(&hint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
@@ -238,19 +233,64 @@ func (s *Store) ConsumeEnrollToken(tokenHash string, now time.Time) (string, err
 	if _, err := tx.Exec(`UPDATE enroll_tokens SET used_at = ? WHERE token_hash = ?`, now.UTC(), tokenHash); err != nil {
 		return "", err
 	}
+	return hint, nil
+}
+
+// ConsumeEnrollToken atomically marks a valid unused token as used and
+// returns its name hint.
+func (s *Store) ConsumeEnrollToken(tokenHash string, now time.Time) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	hint, err := consumeEnrollToken(tx, tokenHash, now)
+	if err != nil {
+		return "", err
+	}
 	return hint, tx.Commit()
+}
+
+// EnrollNode consumes an enroll token and creates the node in one
+// transaction: a failed insert rolls the token back, and of two concurrent
+// enrollments with the same token exactly one wins. A non-empty token name
+// hint overrides the node's self-reported name. Returns the node as stored.
+func (s *Store) EnrollNode(tokenHash string, now time.Time, n Node) (Node, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Node{}, err
+	}
+	defer tx.Rollback()
+	hint, err := consumeEnrollToken(tx, tokenHash, now)
+	if err != nil {
+		return Node{}, err
+	}
+	if hint != "" {
+		n.Name = hint
+	}
+	if err := insertNode(tx, n); err != nil {
+		return Node{}, err
+	}
+	return n, tx.Commit()
 }
 
 // --- nodes ---
 
-func (s *Store) CreateNode(n Node) error {
-	_, err := s.db.Exec(`INSERT INTO nodes
+// execer covers *sql.DB and *sql.Tx.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func insertNode(e execer, n Node) error {
+	_, err := e.Exec(`INSERT INTO nodes
 		(id, name, os, arch, role, wg_pubkey, wg_listen_port, overlay_ip, dns_name, auth_secret_hash, created_at, last_seen, approved, tags)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.ID, n.Name, n.OS, n.Arch, n.Role, n.WGPubKey, n.WGListenPort, n.OverlayIP, n.DNSName,
 		n.AuthSecretHash, n.CreatedAt.UTC(), n.LastSeen.UTC(), n.Approved, text.JoinCSV(n.Tags))
 	return err
 }
+
+func (s *Store) CreateNode(n Node) error { return insertNode(s.db, n) }
 
 const nodeCols = `id, name, os, arch, role, wg_pubkey, wg_listen_port, overlay_ip, dns_name, auth_secret_hash, created_at, last_seen, routes_advertised, routes_enabled, lock_sig, approved, tags`
 
@@ -626,9 +666,15 @@ func (s *Store) ReplaceEndpoints(nodeID, kind string, addrs []string, now time.T
 	if _, err := tx.Exec(`DELETE FROM endpoints WHERE node_id = ? AND kind = ?`, nodeID, kind); err != nil {
 		return false, err
 	}
-	for _, a := range addrs {
-		if _, err := tx.Exec(`INSERT INTO endpoints (node_id, kind, addr, updated_at) VALUES (?, ?, ?, ?)`,
-			nodeID, kind, a, now.UTC()); err != nil {
+	if len(addrs) > 0 {
+		placeholders := make([]string, 0, len(addrs))
+		args := make([]any, 0, len(addrs)*4)
+		for _, a := range addrs {
+			placeholders = append(placeholders, "(?, ?, ?, ?)")
+			args = append(args, nodeID, kind, a, now.UTC())
+		}
+		if _, err := tx.Exec(`INSERT INTO endpoints (node_id, kind, addr, updated_at) VALUES `+
+			strings.Join(placeholders, ", "), args...); err != nil {
 			return false, err
 		}
 	}

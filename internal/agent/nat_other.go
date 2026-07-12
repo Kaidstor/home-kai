@@ -22,15 +22,16 @@ func (a *Agent) setupHubNAT() error {
 
 func (a *Agent) teardownNATRules() {}
 
-// applyFilter is a no-op on non-Linux: macOS has no iptables, so ACL
-// enforcement is skipped (warned once). The overlay still works; the node
-// just isn't firewalled locally.
+// applyFilter is a no-op on non-Linux: macOS has no iptables, so local ACL
+// enforcement is skipped (warned once). The coordinator knows this and, while
+// any policy is enabled, withholds this node's p2p candidates — its traffic
+// is forced through the hub, whose forward filter enforces the ACL centrally.
 var warnFilterOnce sync.Once
 
-func (a *Agent) applyFilter(enabled bool, _ []api.FilterRule) error {
+func (a *Agent) applyFilter(enabled bool, _ []api.FilterRule, _ []api.ForwardRule) error {
 	if enabled {
 		warnFilterOnce.Do(func() {
-			a.log.Warn("ACL enforcement is only supported on linux — this node is not firewalling overlay traffic")
+			a.log.Warn("ACL enforcement is only supported on linux — overlay traffic to this node is filtered on the hub instead (relay only, no direct paths)")
 		})
 	}
 	return nil

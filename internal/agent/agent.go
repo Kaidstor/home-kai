@@ -192,7 +192,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.log.Info("shutting down")
 			a.syncHosts(nil) // leave no stale names behind
 			a.teardownPublishes()
-			_ = a.applyFilter(false, nil) // remove the ACL chain
+			_ = a.applyFilter(false, nil, nil) // remove the ACL chains
 			return nil
 		case <-statusTicker.C:
 			if err := a.reportStatus(ctx); err != nil && ctx.Err() == nil {
@@ -305,11 +305,11 @@ func (a *Agent) syncFilter(nm *api.Netmap) {
 			{SrcCIDRs: []string{a.st.OverlayCIDR}, Protocol: "tcp", Ports: []string{"53"}},
 		}, rules...)
 	}
-	key := fmt.Sprintf("%v|%+v", nm.Self.FilterEnabled, rules)
+	key := fmt.Sprintf("%v|%+v|%+v", nm.Self.FilterEnabled, rules, nm.ForwardRules)
 	if key == a.lastFilter {
 		return
 	}
-	if err := a.applyFilter(nm.Self.FilterEnabled, rules); err != nil {
+	if err := a.applyFilter(nm.Self.FilterEnabled, rules, nm.ForwardRules); err != nil {
 		a.log.Error("applying ACL filter failed", "err", err)
 		return
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 
 	"github.com/kaidstor/home-kai/internal/api"
@@ -22,7 +21,10 @@ type iptablesRule struct {
 }
 
 func (r iptablesRule) run(op string) error {
-	args := append([]string{"-t", r.table, op, r.chain}, r.spec...)
+	return iptExec(append([]string{"-t", r.table, op, r.chain}, r.spec...)...)
+}
+
+func iptExec(args ...string) error {
 	out, err := exec.Command("iptables", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iptables %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -123,83 +125,83 @@ func (a *Agent) teardownNATRules() {
 	a.natRules = nil
 }
 
-// ACL enforcement. All inbound overlay traffic (arriving on the wg interface)
-// is funnelled through a dedicated KAI-FILTER chain: established flows and the
-// compiled allow-rules pass, everything else is dropped. The chain lives off
-// INPUT with an `-i <iface>` match, so physical SSH and the control plane
-// (which never traverse the overlay interface) are untouched. Called on every
-// netmap apply; a full rebuild keeps it idempotent and simple.
-const filterChain = "KAI-FILTER"
+// ACL enforcement, two legs:
+//
+//   - KAI-FILTER off INPUT (`-i <iface>`): inbound overlay traffic addressed
+//     to this node. Physical SSH and the control plane never traverse the
+//     overlay interface and are untouched.
+//   - KAI-FORWARD: traffic this node forwards for other devices — the hub
+//     relaying between peers (`-i <iface> -o <iface>`, which also covers
+//     static peers and, deliberately, leaves exit-node traffic to the
+//     internet alone) and a subnet router forwarding into its advertised
+//     LANs (`-i <iface> -d <route>`). The hooks are inserted at the top of
+//     the forward chain, ahead of the unconditional kai-hub/kai-subnet
+//     ACCEPTs — without this leg those ACCEPTs would bypass the ACL for any
+//     destination that cannot filter for itself.
+//
+// Called on every netmap apply; a full rebuild keeps it idempotent.
+const (
+	filterChain        = "KAI-FILTER"
+	forwardFilterChain = "KAI-FORWARD"
+)
 
-func (a *Agent) applyFilter(enabled bool, rules []api.FilterRule) error {
-	iface := a.dev.Name()
-	ipt := func(args ...string) error {
-		out, err := exec.Command("iptables", args...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("iptables %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-		}
-		return nil
-	}
-	hookExists := func() bool {
-		return exec.Command("iptables", "-t", "filter", "-C", "INPUT", "-i", iface, "-j", filterChain).Run() == nil
-	}
+// chainHook is one jump into an ACL chain from a parent chain.
+type chainHook struct {
+	parent string
+	spec   []string
+}
 
+// rebuildFilterChain (re)creates chain with the given rule bodies and makes
+// sure every hook exists (inserted on top of its parent). Disabled: hooks are
+// detached and the chain removed (open network).
+func rebuildFilterChain(chain string, hooks []chainHook, enabled bool, specs [][]string) error {
 	if !enabled {
-		// Detach and remove the chain (open network).
-		if hookExists() {
-			_ = ipt("-t", "filter", "-D", "INPUT", "-i", iface, "-j", filterChain)
+		for _, h := range hooks {
+			iptablesRule{"filter", h.parent, h.spec}.remove()
 		}
-		_ = exec.Command("iptables", "-t", "filter", "-F", filterChain).Run()
-		_ = exec.Command("iptables", "-t", "filter", "-X", filterChain).Run()
+		_ = exec.Command("iptables", "-t", "filter", "-F", chain).Run()
+		_ = exec.Command("iptables", "-t", "filter", "-X", chain).Run()
 		return nil
 	}
-
-	// (Re)create and flush the chain, then fill it.
-	_ = exec.Command("iptables", "-t", "filter", "-N", filterChain).Run() // ignore "exists"
-	if err := ipt("-t", "filter", "-F", filterChain); err != nil {
+	_ = exec.Command("iptables", "-t", "filter", "-N", chain).Run() // ignore "exists"
+	if err := iptExec("-t", "filter", "-F", chain); err != nil {
 		return err
 	}
-	if err := ipt("-t", "filter", "-A", filterChain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
-		return err
-	}
-	for _, rule := range rules {
-		for _, cidr := range rule.SrcCIDRs {
-			base := []string{"-t", "filter", "-A", filterChain, "-s", cidr}
-			switch rule.Protocol {
-			case "", "any":
-				if err := ipt(append(base, "-j", "ACCEPT")...); err != nil {
-					return err
-				}
-			case "icmp":
-				if err := ipt(append(base, "-p", "icmp", "-j", "ACCEPT")...); err != nil {
-					return err
-				}
-			case "tcp", "udp":
-				if len(rule.Ports) == 0 {
-					if err := ipt(append(base, "-p", rule.Protocol, "-j", "ACCEPT")...); err != nil {
-						return err
-					}
-				} else {
-					// multiport takes a comma list (max 15) — chunk to be safe.
-					for chunk := range slices.Chunk(rule.Ports, 15) {
-						args := append(append([]string{}, base...), "-p", rule.Protocol,
-							"-m", "multiport", "--dports", strings.Join(chunk, ","), "-j", "ACCEPT")
-						if err := ipt(args...); err != nil {
-							return err
-						}
-					}
-				}
-			}
+	for _, spec := range specs {
+		if err := iptExec(append([]string{"-t", "filter", "-A", chain}, spec...)...); err != nil {
+			return err
 		}
 	}
-	if err := ipt("-t", "filter", "-A", filterChain, "-j", "DROP"); err != nil {
-		return err
-	}
-	// Attach the hook exactly once.
-	if !hookExists() {
-		if err := ipt("-t", "filter", "-I", "INPUT", "-i", iface, "-j", filterChain); err != nil {
+	for _, h := range hooks {
+		if err := (iptablesRule{"filter", h.parent, h.spec}).ensure(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (a *Agent) applyFilter(enabled bool, input []api.FilterRule, forward []api.ForwardRule) error {
+	iface := a.dev.Name()
+	err := rebuildFilterChain(filterChain,
+		[]chainHook{{"INPUT", []string{"-i", iface, "-j", filterChain}}},
+		enabled, filterChainSpecs(input))
+	if err != nil {
+		return err
+	}
+	// The forward leg exists only where this node forwards for others. A
+	// subnet router hooks every *advertised* route, while allow-rules are
+	// compiled for enabled ones only — an advertised-but-not-enabled route is
+	// then default-deny instead of open via the kai-subnet ACCEPT.
+	fwd := forwardChain()
+	var hooks []chainHook
+	if a.st.Role == api.RoleHub {
+		hooks = append(hooks, chainHook{fwd, []string{"-i", iface, "-o", iface, "-j", forwardFilterChain}})
+	}
+	for _, rt := range a.st.AdvertiseRoutes {
+		hooks = append(hooks, chainHook{fwd, []string{"-i", iface, "-d", rt, "-j", forwardFilterChain}})
+	}
+	if len(hooks) == 0 {
+		return nil
+	}
+	return rebuildFilterChain(forwardFilterChain, hooks, enabled, forwardChainSpecs(forward))
 }

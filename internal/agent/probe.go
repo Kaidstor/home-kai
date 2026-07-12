@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -81,8 +82,9 @@ func (a *Agent) syncProbes(nm *api.Netmap) {
 			a.probes[p.WGPublicKey] = ps
 		}
 		ps.hostname = p.Hostname
-		if strings.Join(ps.candidates, ",") != strings.Join(p.Candidates, ",") {
-			ps.candidates = p.Candidates
+		cands := validCandidates(p.Candidates)
+		if strings.Join(ps.candidates, ",") != strings.Join(cands, ",") {
+			ps.candidates = cands
 			// New addresses are worth trying right away — unless the current
 			// direct path still works.
 			if ps.phase == phaseProbing {
@@ -91,6 +93,15 @@ func (a *Agent) syncProbes(nm *api.Netmap) {
 			if ps.phase == phaseIdle {
 				ps.nextRetryAt = time.Time{}
 			}
+			// Withdrawn candidates (e.g. the ACL forcing this pair onto the
+			// hub relay) tear down an established direct path too, not just
+			// future probes — otherwise it would live as long as handshakes
+			// keep flowing.
+			if len(cands) == 0 && ps.phase != phaseIdle {
+				ps.phase = phaseIdle
+				ps.confirmedEndpoint = ""
+				a.log.Info("direct-path candidates withdrawn — relaying via hub", "peer", ps.hostname)
+			}
 		}
 	}
 	for key := range a.probes {
@@ -98,6 +109,32 @@ func (a *Agent) syncProbes(nm *api.Netmap) {
 			delete(a.probes, key)
 		}
 	}
+}
+
+// maxCandidates bounds how many endpoints the prober is willing to walk for
+// one peer (each costs a candidateWindow).
+const maxCandidates = 8
+
+// validCandidates keeps only literal ip:port endpoints worth dialling —
+// defense in depth against a coordinator handing out hostnames, loopback or
+// an unbounded list.
+func validCandidates(in []string) []string {
+	var out []string
+	for _, c := range in {
+		ap, err := netip.ParseAddrPort(c)
+		if err != nil || ap.Port() == 0 {
+			continue
+		}
+		ip := ap.Addr().Unmap()
+		if ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() {
+			continue
+		}
+		out = append(out, c)
+		if len(out) == maxCandidates {
+			break
+		}
+	}
+	return out
 }
 
 // probeManaged: on spokes, peers without a fixed endpoint (other spokes) are

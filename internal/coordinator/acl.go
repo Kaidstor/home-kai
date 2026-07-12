@@ -22,6 +22,15 @@ import (
 // agent enforces them on its overlay interface. As soon as one policy exists
 // the network is default-deny for overlay app traffic; with zero policies the
 // filter stays off (open network, backward compatible).
+//
+// Destinations that cannot enforce their own inbound filter are covered in
+// the FORWARD path instead (ForwardRules): the hub filters everything it
+// relays (static peers, spoke↔spoke relay, subnets reached through it) and a
+// subnet router filters traffic it forwards into its LAN. A LAN subnet
+// inherits the tags of the node advertising it. Non-Linux nodes cannot
+// enforce locally, so while any policy is enabled the coordinator withholds
+// their p2p candidates — their traffic is forced through the hub, where the
+// forward filter applies.
 
 var validProtocols = map[string]bool{"any": true, "tcp": true, "udp": true, "icmp": true}
 
@@ -90,41 +99,120 @@ func matchTag(policyTags, deviceTags []string) bool {
 	return intersects(policyTags, deviceTags)
 }
 
+// aclDev is one policy participant: a node, a static peer or an advertised
+// LAN subnet (which inherits the tags of its advertising node).
+type aclDev struct {
+	cidr string
+	tags []string
+}
+
+func aclSources(nodes []store.Node, statics []store.StaticPeer) []aclDev {
+	var out []aclDev
+	for _, n := range nodes {
+		out = append(out, aclDev{n.OverlayIP + "/32", n.Tags})
+	}
+	for _, p := range statics {
+		out = append(out, aclDev{p.OverlayIP + "/32", p.Tags})
+	}
+	return out
+}
+
+// policySources collects the source CIDRs one enabled policy grants access
+// from, excluding the destination itself (a device never needs a rule to
+// reach itself).
+func policySources(pol store.Policy, sources []aclDev, dstCIDR string) []string {
+	var out []string
+	for _, s := range sources {
+		if s.cidr == dstCIDR {
+			continue
+		}
+		if matchTag(pol.SrcTags, s.tags) {
+			out = append(out, s.cidr)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // computeFilterRules builds the inbound allow-rules for one destination node
 // from the enabled policies. Returns nil when there are no policies (filter
 // stays off).
 func computeFilterRules(dst store.Node, nodes []store.Node, statics []store.StaticPeer, policies []store.Policy) []api.FilterRule {
-	type dev struct {
-		ip   string
-		tags []string
-	}
-	var sources []dev
-	for _, n := range nodes {
-		sources = append(sources, dev{n.OverlayIP, n.Tags})
-	}
-	for _, p := range statics {
-		sources = append(sources, dev{p.OverlayIP, p.Tags})
-	}
-
+	sources := aclSources(nodes, statics)
 	var rules []api.FilterRule
 	for _, pol := range policies {
 		if !pol.Enabled || !matchTag(pol.DstTags, dst.Tags) {
 			continue
 		}
-		var srcCIDRs []string
-		for _, s := range sources {
-			if s.ip == dst.OverlayIP {
-				continue // a node never needs a rule to reach itself
-			}
-			if matchTag(pol.SrcTags, s.tags) {
-				srcCIDRs = append(srcCIDRs, s.ip+"/32")
-			}
-		}
+		srcCIDRs := policySources(pol, sources, dst.OverlayIP+"/32")
 		if len(srcCIDRs) == 0 {
 			continue
 		}
-		sort.Strings(srcCIDRs)
 		rules = append(rules, api.FilterRule{SrcCIDRs: srcCIDRs, Protocol: pol.Protocol, Ports: pol.Ports})
+	}
+	return rules
+}
+
+// computeForwardRules builds the allow-rules for traffic `self` forwards on
+// behalf of others. The hub filters everything it relays: other nodes, static
+// peers and every enabled subnet. A subnet router filters what it forwards
+// into its own enabled LANs. Destinations enforcing their own inbound filter
+// are still listed on the hub — relayed traffic is then checked twice, which
+// keeps the semantics identical on both paths.
+func computeForwardRules(self store.Node, nodes []store.Node, statics []store.StaticPeer, policies []store.Policy) []api.ForwardRule {
+	var dsts []aclDev
+	if self.Role == string(api.RoleHub) {
+		for _, n := range nodes {
+			if n.ID == self.ID {
+				continue // traffic to the hub itself goes through its INPUT filter
+			}
+			dsts = append(dsts, aclDev{n.OverlayIP + "/32", n.Tags})
+			for _, rt := range n.RoutesEnabled {
+				dsts = append(dsts, aclDev{rt, n.Tags})
+			}
+		}
+		for _, p := range statics {
+			dsts = append(dsts, aclDev{p.OverlayIP + "/32", p.Tags})
+		}
+	}
+	// Own enabled subnets: the advertising node forwards into them (this also
+	// covers a hub that is a subnet router itself).
+	for _, rt := range self.RoutesEnabled {
+		dsts = append(dsts, aclDev{rt, self.Tags})
+	}
+
+	sources := aclSources(nodes, statics)
+	var rules []api.ForwardRule
+	for _, pol := range policies {
+		if !pol.Enabled {
+			continue
+		}
+		// Group destinations sharing the same source set into one rule: for a
+		// given policy the set only differs by the self-exclusion.
+		bySrc := map[string][]string{}
+		var order []string
+		for _, dst := range dsts {
+			if !matchTag(pol.DstTags, dst.tags) {
+				continue
+			}
+			srcs := policySources(pol, sources, dst.cidr)
+			if len(srcs) == 0 {
+				continue
+			}
+			key := strings.Join(srcs, ",")
+			if _, seen := bySrc[key]; !seen {
+				order = append(order, key)
+			}
+			bySrc[key] = append(bySrc[key], dst.cidr)
+		}
+		for _, key := range order {
+			dstCIDRs := bySrc[key]
+			sort.Strings(dstCIDRs)
+			rules = append(rules, api.ForwardRule{
+				SrcCIDRs: strings.Split(key, ","), DstCIDRs: dstCIDRs,
+				Protocol: pol.Protocol, Ports: pol.Ports,
+			})
+		}
 	}
 	return rules
 }

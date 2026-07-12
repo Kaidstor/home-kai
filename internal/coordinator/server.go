@@ -59,6 +59,9 @@ type Config struct {
 	// RequireApproval holds new spoke nodes out of the network until an admin
 	// approves them (the hub is always trusted implicitly).
 	RequireApproval bool
+	// ReservedPorts are extra host ports (services co-located with the
+	// coordinator) that publishes must not claim, on top of the built-ins.
+	ReservedPorts []int
 }
 
 type Server struct {
@@ -69,6 +72,10 @@ type Server struct {
 
 	mu     sync.Mutex
 	wakeCh chan struct{} // closed and replaced on every netmap bump
+
+	// enrollMu serializes enrollments: hub uniqueness and IP allocation are
+	// read-then-write checks over shared state.
+	enrollMu sync.Mutex
 
 	sessMu   sync.Mutex
 	sessions map[string]time.Time // sha256(session id) → expiry
@@ -203,8 +210,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui", http.StatusFound)
 	})
-	return mux
+	// Every request body is small JSON; cap it so the public listener cannot
+	// be fed unbounded bodies (the login endpoint is unauthenticated).
+	return http.MaxBytesHandler(mux, maxRequestBody)
 }
+
+// maxRequestBody bounds any request body: the largest legitimate payload is
+// a lock-sign batch, well under this.
+const maxRequestBody = 1 << 20
 
 // --- helpers ---
 

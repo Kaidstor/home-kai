@@ -88,11 +88,8 @@ func client() *apiclient.Client {
 	url := os.Getenv("KAI_URL")
 	token := os.Getenv("KAI_ADMIN_TOKEN")
 	fp := os.Getenv("KAI_FINGERPRINT")
-	if url == "" || token == "" {
-		fatal(fmt.Errorf("KAI_URL and KAI_ADMIN_TOKEN must be set"))
-	}
-	if fp == "" {
-		fmt.Fprintln(os.Stderr, "warning: KAI_FINGERPRINT is not set — TLS is NOT verified")
+	if url == "" || token == "" || fp == "" {
+		fatal(fmt.Errorf("KAI_URL, KAI_ADMIN_TOKEN and KAI_FINGERPRINT must be set (fingerprint: journalctl -u kai-coordinator | grep fingerprint)"))
 	}
 	c, err := apiclient.New(url, fp, token)
 	if err != nil {

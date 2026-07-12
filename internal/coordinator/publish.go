@@ -15,12 +15,24 @@ import (
 	"github.com/kaidstor/home-kai/internal/coordinator/store"
 )
 
-// reservedPorts can never be published: coordinator/WireGuard/SSH plus what
-// already lives on this VPS (xray, zabbix), 80 — certbot's http-01 needs it
-// free for the UI certificate — and 53, the hub's overlay DNS responder.
+// reservedPorts can never be published: SSH, the coordinator listeners,
+// WireGuard, 80/443 — certbot's http-01 needs them free for the UI
+// certificate — and 53, the hub's overlay DNS responder. Ports of other
+// services living on the same host go into the reserved_ports config list.
 var reservedPorts = map[int]bool{
-	22: true, 53: true, 80: true, 443: true, 8443: true, 8444: true,
-	9443: true, 10050: true, 51820: true,
+	22: true, 53: true, 80: true, 443: true, 8443: true, 8444: true, 51820: true,
+}
+
+func (s *Server) portReserved(p int) bool {
+	if reservedPorts[p] {
+		return true
+	}
+	for _, rp := range s.cfg.ReservedPorts {
+		if rp == p {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) validatePublishTarget(target string) error {
@@ -53,7 +65,7 @@ func (s *Server) handlePublishCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "listen_port must be 1-65535")
 		return
 	}
-	if reservedPorts[req.ListenPort] {
+	if s.portReserved(req.ListenPort) {
 		writeErr(w, http.StatusConflict, fmt.Sprintf("port %d is reserved", req.ListenPort))
 		return
 	}

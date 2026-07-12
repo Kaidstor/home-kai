@@ -53,7 +53,14 @@ type fileConfig struct {
 	RequireApproval bool `toml:"require_approval"`
 	// EventWebhook receives a JSON POST per activity-log event (SIEM/чат).
 	EventWebhook string `toml:"event_webhook"`
+	// ReservedPorts are extra ports of services co-located on this host that
+	// publishes must not claim (the coordinator's own ports are built in).
+	ReservedPorts []int `toml:"reserved_ports"`
 }
+
+// writeTimeout must exceed the coordinator's 55s netmap long-poll hold, or
+// every idle poll would be cut mid-flight.
+const writeTimeout = 70 * time.Second
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "gen-admin-token" {
@@ -64,7 +71,7 @@ func main() {
 		token := hex.EncodeToString(b)
 		sum := sha256.Sum256([]byte(token))
 		fmt.Printf("admin token:      %s\nadmin_token_hash: %s\n", token, hex.EncodeToString(sum[:]))
-		fmt.Println("\nPut admin_token_hash into coordinator.toml and keep the token itself for the kai CLI.")
+		fmt.Println("\nPut admin_token_hash into coordinator.toml and keep the token itself for the home-kai CLI.")
 		return
 	}
 
@@ -143,6 +150,7 @@ func main() {
 		Fingerprint:     fp,
 		EventWebhook:    cfg.EventWebhook,
 		RequireApproval: cfg.RequireApproval,
+		ReservedPorts:   cfg.ReservedPorts,
 	}, st, provider, log)
 
 	handler := srv.Handler()
@@ -165,6 +173,9 @@ func main() {
 			Handler:           handler,
 			TLSConfig:         &tls.Config{GetCertificate: reloader.GetCertificate, MinVersion: tls.VersionTLS12},
 			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      writeTimeout,
+			IdleTimeout:       2 * time.Minute,
 		}
 		log.Info("kai-coordinator UI listening", "addr", cfg.UI.Listen, "cert", cfg.UI.CertFile)
 		go func() {
@@ -181,6 +192,9 @@ func main() {
 		Handler:           handler,
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       2 * time.Minute,
 	}
 	log.Info("kai-coordinator listening", "addr", cfg.Listen, "fingerprint", fp, "overlay", overlay.String(), "dns", cfg.DNS.Provider)
 	if err := httpSrv.ListenAndServeTLS("", ""); err != nil {

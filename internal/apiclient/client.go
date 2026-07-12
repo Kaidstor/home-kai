@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/kaidstor/home-kai/internal/api"
@@ -26,18 +27,30 @@ type Client struct {
 	http    *http.Client
 }
 
-// New pins the coordinator cert when fingerprint is non-empty; an empty
-// fingerprint disables TLS verification entirely (CLI convenience — callers
-// should warn).
+// New builds a client talking to an https coordinator whose certificate
+// matches the pinned fingerprint. Both are mandatory: a bearer token must
+// never travel over plaintext or an unverified TLS session.
 func New(baseURL, fingerprint, bearer string) (*Client, error) {
-	tlsCfg := &tls.Config{InsecureSkipVerify: true}
-	if fingerprint != "" {
-		want, err := hex.DecodeString(fingerprint)
-		if err != nil || len(want) != sha256.Size {
-			return nil, fmt.Errorf("bad fingerprint %q: want 64 hex chars", fingerprint)
-		}
-		// Verification is replaced by the fingerprint pin.
-		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("bad coordinator url %q: %w", baseURL, err)
+	}
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("coordinator url must be https://, got %q", baseURL)
+	}
+	if fingerprint == "" {
+		return nil, fmt.Errorf("coordinator TLS fingerprint is required (sha256 hex, printed by the coordinator on start)")
+	}
+	want, err := hex.DecodeString(fingerprint)
+	if err != nil || len(want) != sha256.Size {
+		return nil, fmt.Errorf("bad fingerprint %q: want 64 hex chars", fingerprint)
+	}
+	// Chain/hostname verification is replaced by the fingerprint pin —
+	// InsecureSkipVerify only skips the CA check, VerifyPeerCertificate still
+	// runs and rejects anything but the pinned certificate.
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
 				return fmt.Errorf("no peer certificate")
 			}
@@ -46,7 +59,7 @@ func New(baseURL, fingerprint, bearer string) (*Client, error) {
 				return fmt.Errorf("coordinator cert fingerprint mismatch: got %s", hex.EncodeToString(got[:]))
 			}
 			return nil
-		}
+		},
 	}
 	return &Client{
 		baseURL: baseURL,

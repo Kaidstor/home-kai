@@ -19,9 +19,10 @@ const (
 const HostsSuffix = ".kai"
 
 // LocalSocketPath is where the agent exposes its read-only status API for the
-// kai CLI (`kai status`, `kai ping`). World-connectable on purpose: it only
-// reveals tunnel state, never keys, and requiring sudo for status would be
-// needless friction on a single-user machine.
+// admin CLI (`home-kai status`, `home-kai ping`). Mode 0660 root:kai — it
+// never reveals keys, but topology (IPs, endpoints, tunnel state) is not for
+// every local account either; add users to the kai group for sudo-less
+// status.
 const LocalSocketPath = "/var/run/kai-agent.sock"
 
 // EnrollRequest is sent by an agent once, authenticated by a one-time enroll
@@ -58,6 +59,11 @@ type Netmap struct {
 	Publishes []Publish `json:"publishes,omitempty"`
 	// FilterRules are the inbound overlay allow-rules for this node (ACL).
 	FilterRules []FilterRule `json:"filter_rules,omitempty"`
+	// ForwardRules are the allow-rules for traffic this node forwards for
+	// others (hub relay, subnet router). Enforced in the FORWARD path so that
+	// devices that cannot filter for themselves (static peers, LAN hosts
+	// behind a subnet router) are still covered by the ACL.
+	ForwardRules []ForwardRule `json:"forward_rules,omitempty"`
 }
 
 // Publish exposes one overlay service on a public port of the hub.
@@ -327,6 +333,18 @@ type PolicyCreateRequest struct {
 // protocol/ports; everything else is dropped once FilterEnabled is set.
 type FilterRule struct {
 	SrcCIDRs []string `json:"src_cidrs"`
+	Protocol string   `json:"protocol"` // any | tcp | udp | icmp
+	Ports    []string `json:"ports,omitempty"`
+}
+
+// ForwardRule is one compiled allow-rule for traffic this node forwards on
+// behalf of other devices: the hub relaying to static peers, other spokes and
+// enabled subnets, and a subnet router forwarding into its LAN. Unlike
+// FilterRule it names explicit destinations, because forwarded traffic is not
+// addressed to the enforcing node itself.
+type ForwardRule struct {
+	SrcCIDRs []string `json:"src_cidrs"`
+	DstCIDRs []string `json:"dst_cidrs"`
 	Protocol string   `json:"protocol"` // any | tcp | udp | icmp
 	Ports    []string `json:"ports,omitempty"`
 }

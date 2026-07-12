@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +21,18 @@ func (a *Agent) serveLocalAPI(ctx context.Context) {
 		a.log.Warn("local api unavailable", "err", err)
 		return
 	}
-	_ = os.Chmod(api.LocalSocketPath, 0o666)
+	// 0660 root:kai — the status API reveals overlay topology (IPs, endpoints,
+	// tunnel state), which is not for every local account on a multi-user
+	// host. Without a kai group the socket stays root-only.
+	_ = os.Chmod(api.LocalSocketPath, 0o660)
+	if g, err := user.LookupGroup("kai"); err == nil {
+		if gid, err := strconv.Atoi(g.Gid); err == nil {
+			_ = os.Chown(api.LocalSocketPath, -1, gid)
+		}
+	} else {
+		a.log.Info("group 'kai' not found — status socket is root-only",
+			"hint", "groupadd kai && usermod -aG kai <user> to run home-kai status without sudo")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/local/status", func(w http.ResponseWriter, r *http.Request) {

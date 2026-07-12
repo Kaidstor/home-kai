@@ -15,7 +15,9 @@ Zero-dependency: три статических Go-бинаря, состояни
 |---|---|---|
 | `kai-coordinator` | VPS, TCP 8443 | enrollment по одноразовым токенам, раздача netmap (HTTP long-poll), admin API, **web UI на `/ui`**, `/metrics`, DNS-имена устройств |
 | `kai-agent` | каждый узел (Linux/macOS, root) | WireGuard-интерфейс, синхронизация пиров, p2p-prober, subnet router, /etc/hosts-имена, funnel-форвардеры (на хабе), кэш netmap |
-| `kai` | админская машина | токены, узлы/маршруты, static peers с QR, публикации, `status`/`ping`, network lock |
+| `home-kai` | админская машина | токены, узлы/маршруты, static peers с QR, публикации, `status`/`ping`, network lock |
+
+Правило имён: `kai-*` — служебные бинарники и сеть (`kai-coordinator`, `kai-agent`, интерфейс `kai0`, имена `*.kai`), `home-kai` — админский CLI.
 
 Базовая топология — hub-and-spoke: узлы держат исходящий туннель к хабу (VPS), хаб форвардит. Наружу открыт только VPS: TCP 8443 (координатор) и UDP 51820 (WireGuard). iPhone/Android/роутер подключаются официальным WireGuard-клиентом (`home-kai peer create` → QR).
 
@@ -33,7 +35,7 @@ Zero-dependency: три статических Go-бинаря, состояни
 - **Публикации (funnel).** TCP-проброс с публичного порта VPS на сервис в оверлее: `{"name":"jellyfin","listen_port":8096,"target":"nas.kai:8096"}` — хаб слушает порт и форвардит. Управление в UI или через `POST /v1/admin/publishes`.
 - **Ротация WG-ключей.** `kai-agent up --rekey-days 30` — авторотация на живом устройстве; `kai-agent rekey` — офлайн. Прерванная ротация самолечится (агент ре-ассертит ключ при старте).
 - **Network lock** (аналог tailnet lock). `home-kai lock init` создаёт ed25519-ключ **только на админской машине** (`~/.config/kai/lock.key` — забэкапь!), `home-kai lock sign` подписывает привязки (wg-ключ, overlay-IP) всех устройств. Агенты пинят ключ и отбрасывают неподписанных пиров: скомпрометированный координатор не может подсунуть своего. Новые устройства и ротации ключей требуют `home-kai lock sign`. `home-kai lock status` / `home-kai lock disable`.
-- **ACL-политики.** Узлам и static peers назначаются теги; политика `src-теги → dst-теги, протокол, порты` разрешает трафик. Как только появляется первая включённая политика — оверлей работает по принципу «запрещено всё, кроме явно разрешённого» (Linux-агенты ставят iptables-цепочку `KAI-FILTER` на входе `kai0`; macOS — предупреждение, без enforcement). Управление в UI («Добавить политику», кнопка «теги») или `home-kai policy` / `home-kai node tag`.
+- **ACL-политики.** Узлам и static peers назначаются теги; политика `src-теги → dst-теги, протокол, порты` разрешает трафик. Как только появляется первая включённая политика — оверлей работает по принципу «запрещено всё, кроме явно разрешённого». Enforcement двухуровневый: Linux-агенты ставят цепочку `KAI-FILTER` на входе `kai0` (свой входящий трафик), а хаб и subnet-роутеры дополнительно фильтруют **пересылаемый** трафик цепочкой `KAI-FORWARD` — так под ACL попадают и static peers (телефоны), и LAN-подсети за роутером (подсеть наследует теги анонсирующего узла). Узлы без iptables (macOS) при включённом ACL лишаются прямых p2p-путей: их трафик принудительно идёт через хаб, где и фильтруется. Управление в UI («Добавить политику», кнопка «теги») или `home-kai policy` / `home-kai node tag`.
 - **Peer approval.** С `require_approval = true` в конфиге новый узел висит без доступа (никого не видит и невидим другим), пока админ не одобрит его в UI или через `home-kai node approve <id>`.
 - **Журнал событий.** Координатор пишет ключевые действия (enroll/approve/routes/policy/publish/lock/…) в SQLite; смотреть в панели (карточка «Журнал»), через `home-kai events` или `GET /v1/admin/events`. Опциональный `event_webhook` в конфиге шлёт JSON-POST на каждое событие (мост в SIEM/чат).
 - **`/metrics`** — Prometheus-метрики (admin bearer): узлы total/online/pending, публикации, политики, версия netmap, сессии, lock.
@@ -55,7 +57,8 @@ Zero-dependency: три статических Go-бинаря, состояни
 ## Быстрые команды
 
 ```sh
-# локально на любом узле (без токенов — через unix socket агента)
+# локально на любом узле (без токенов — через unix socket агента;
+# сокет 0660 root:kai — либо sudo, либо groupadd kai && usermod -aG kai $USER)
 home-kai status                        # пиры: direct/relay, handshake, rx/tx
 home-kai ping nas                      # резолв имени + путь + ping
 
@@ -81,7 +84,7 @@ sudo kai-agent up --coordinator https://vpn.example.com:8443 --token ... --finge
 # полезные флаги: --advertise-routes CIDR,CIDR  --rekey-days N  --no-hosts
 ```
 
-> Без sec можно по-старому — `export KAI_URL/KAI_ADMIN_TOKEN/KAI_FINGERPRINT` и вызывать `kai` напрямую; sec лишь держит admin-токен вне окружения и истории.
+> Без sec можно по-старому — `export KAI_URL/KAI_ADMIN_TOKEN/KAI_FINGERPRINT` и вызывать `home-kai` напрямую; sec лишь держит admin-токен вне окружения и истории. Все три переменные обязательны: без отпечатка CLI не подключится (TLS-пиннинг не отключается).
 
 ## Разработка
 
@@ -118,6 +121,7 @@ key_file  = "/etc/kai/ui-tls/privkey.pem"
 
 require_approval = false     # true → новые узлы ждут одобрения (home-kai node approve / кнопка в UI)
 event_webhook    = ""        # URL: POST JSON на каждое событие журнала (SIEM/чат)
+reserved_ports   = []        # доп. порты этого хоста, запрещённые для публикаций (напр. [9443, 10050])
 ```
 
 ## Статус и лицензия

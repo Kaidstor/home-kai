@@ -25,16 +25,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "missing enroll token")
 		return
 	}
-	nameHint, err := s.store.ConsumeEnrollToken(sha256hex(tok), time.Now())
-	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusUnauthorized, "invalid, expired or already used enroll token")
-		return
-	}
-	if err != nil {
-		s.errInternal(w, err)
-		return
-	}
-
+	// The one-time token is consumed last, atomically with the node insert
+	// (store.EnrollNode): a malformed request, a role conflict or a failed
+	// write must not burn it.
 	var req api.EnrollRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
@@ -51,6 +44,15 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "role must be node or hub")
 		return
 	}
+	if req.WGListenPort < 0 || req.WGListenPort > 65535 {
+		writeErr(w, http.StatusBadRequest, "bad wg_listen_port")
+		return
+	}
+
+	// Serialize enrollments: the hub-uniqueness check and the IP allocation
+	// are read-then-write over shared state.
+	s.enrollMu.Lock()
+	defer s.enrollMu.Unlock()
 
 	nodes, err := s.store.Nodes()
 	if err != nil {
@@ -75,10 +77,6 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	name := req.Hostname
-	if nameHint != "" {
-		name = nameHint
-	}
 	nodeID, err := randomHex(8)
 	if err != nil {
 		s.errInternal(w, err)
@@ -97,16 +95,22 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// wait for approval, and only when the mode is enabled.
 	approved := !s.cfg.RequireApproval || req.Role == api.RoleHub
 	node := store.Node{
-		ID: "n_" + nodeID, Name: name, OS: req.OS, Arch: req.Arch, Role: string(req.Role),
+		ID: "n_" + nodeID, Name: req.Hostname, OS: req.OS, Arch: req.Arch, Role: string(req.Role),
 		WGPubKey: req.WGPublicKey, WGListenPort: req.WGListenPort,
 		OverlayIP: overlayIP.String(), DNSName: dnsName,
 		AuthSecretHash: sha256hex(authSecret), CreatedAt: now, LastSeen: now,
 		Approved: approved,
 	}
-	if err := s.store.CreateNode(node); err != nil {
+	node, err = s.store.EnrollNode(sha256hex(tok), now, node)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusUnauthorized, "invalid, expired or already used enroll token")
+		return
+	}
+	if err != nil {
 		s.errInternal(w, err)
 		return
 	}
+	name := node.Name
 	version, err := s.bumpNetmap()
 	if err != nil {
 		s.errInternal(w, err)
@@ -164,6 +168,17 @@ func (s *Server) buildNetmapFor(node store.Node, version int64) (api.Netmap, err
 	if !lockActive {
 		lockPub = "" // arming phase: nothing distributed until everything is signed
 	}
+	policies, err := s.store.Policies()
+	if err != nil {
+		return api.Netmap{}, err
+	}
+	anyEnabled := false
+	for _, p := range policies {
+		if p.Enabled {
+			anyEnabled = true
+			break
+		}
+	}
 	now := time.Now()
 	candidates := map[string][]string{}
 	for id, list := range eps {
@@ -184,29 +199,43 @@ func (s *Server) buildNetmapFor(node store.Node, version int64) (api.Netmap, err
 			candidates[id] = all
 		}
 	}
+	if anyEnabled {
+		// Non-Linux agents cannot enforce the filter locally. While the ACL is
+		// active they must not carry direct p2p paths that bypass it: withhold
+		// their candidates (nobody probes them) and give them none to probe —
+		// all their traffic then relays via the hub's forward filter.
+		if !filterCapable(node) {
+			candidates = nil
+		} else {
+			for _, n := range nodes {
+				if !filterCapable(n) {
+					delete(candidates, n.ID)
+				}
+			}
+		}
+	}
 	nm, err := BuildNetmap(node, nodes, statics, candidates, publishes, lockPub, s.cfg.OverlayCIDR, s.cfg.HubEndpoint, s.cfg.MTU, version)
 	if err != nil {
 		return api.Netmap{}, err
 	}
-	// ACL: compile this node's inbound allow-rules. The filter turns on only
-	// once at least one *enabled* policy exists — otherwise the network stays
-	// open (backward compatible).
-	policies, err := s.store.Policies()
-	if err != nil {
-		return api.Netmap{}, err
-	}
-	anyEnabled := false
-	for _, p := range policies {
-		if p.Enabled {
-			anyEnabled = true
-			break
-		}
-	}
+	// ACL: compile this node's allow-rules. The filter turns on only once at
+	// least one *enabled* policy exists — otherwise the network stays open
+	// (backward compatible). FilterRules guard the node's own inbound traffic
+	// (INPUT); ForwardRules guard what it forwards for others (hub relay,
+	// subnet router) so static peers, LAN subnets and non-Linux nodes are
+	// covered too.
 	if anyEnabled {
 		nm.Self.FilterEnabled = true
 		nm.FilterRules = computeFilterRules(node, nodes, statics, policies)
+		nm.ForwardRules = computeForwardRules(node, nodes, statics, policies)
 	}
 	return nm, nil
+}
+
+// filterCapable reports whether a node's agent can enforce the ACL filter
+// locally (iptables — Linux only).
+func filterCapable(n store.Node) bool {
+	return n.OS == "linux"
 }
 
 func (s *Server) handleNetmap(w http.ResponseWriter, r *http.Request, node store.Node) {
@@ -255,6 +284,34 @@ func (s *Server) handleNetmap(w http.ResponseWriter, r *http.Request, node store
 	}
 }
 
+// maxReportedEndpoints bounds how many LAN endpoints one node may publish as
+// p2p candidates per status report.
+const maxReportedEndpoints = 8
+
+// sanitizeEndpoints keeps only literal ip:port addresses other peers could
+// sensibly dial. Endpoints come from nodes and are redistributed as dial
+// targets to everyone else — a compromised node must not be able to point
+// peers at loopback, multicast, link-local or in-overlay addresses, or flood
+// the endpoint table. Invalid entries are dropped, not fatal.
+func sanitizeEndpoints(addrs []string, overlay netip.Prefix, max int) []string {
+	var out []string
+	for _, a := range addrs {
+		ap, err := netip.ParseAddrPort(a)
+		if err != nil || ap.Port() == 0 {
+			continue
+		}
+		ip := ap.Addr().Unmap()
+		if ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || overlay.Contains(ip) {
+			continue
+		}
+		out = append(out, netip.AddrPortFrom(ip, ap.Port()).String())
+		if len(out) == max {
+			break
+		}
+	}
+	return out
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, node store.Node) {
 	var rep api.StatusReport
 	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
@@ -264,7 +321,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, node store
 	now := time.Now()
 	needBump := false
 
-	epChanged, err := s.store.ReplaceEndpoints(node.ID, "local", rep.EndpointsLocal, now)
+	eps := sanitizeEndpoints(rep.EndpointsLocal, s.cfg.OverlayCIDR, maxReportedEndpoints)
+	if len(eps) != len(rep.EndpointsLocal) {
+		s.log.Warn("status: dropped invalid local endpoints", "node", node.Name,
+			"reported", len(rep.EndpointsLocal), "kept", len(eps))
+	}
+	epChanged, err := s.store.ReplaceEndpoints(node.ID, "local", eps, now)
 	if err != nil {
 		s.errInternal(w, err)
 		return
@@ -302,10 +364,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, node store
 		}
 		for _, po := range rep.PeersObserved {
 			id, ok := byKey[po.WGPublicKey]
-			if !ok || po.Endpoint == "" {
+			if !ok {
 				continue
 			}
-			obsChanged, err := s.store.ReplaceEndpoints(id, "observed", []string{po.Endpoint}, now)
+			obs := sanitizeEndpoints([]string{po.Endpoint}, s.cfg.OverlayCIDR, 1)
+			if len(obs) == 0 {
+				continue
+			}
+			obsChanged, err := s.store.ReplaceEndpoints(id, "observed", obs, now)
 			if err != nil {
 				s.errInternal(w, err)
 				return
