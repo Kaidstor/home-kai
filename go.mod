@@ -2,6 +2,8 @@ module github.com/kaidstor/home-kai
 
 go 1.25.0
 
+toolchain go1.25.12
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/mdp/qrterminal/v3 v3.2.1
