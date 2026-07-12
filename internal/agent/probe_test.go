@@ -152,6 +152,67 @@ func TestProbeAllCandidatesFail(t *testing.T) {
 	}
 }
 
+// The peer reboots and its probe handshakes us while we sit in the 30-minute
+// retry backoff: promotion must not wait for our own retry — the peer's
+// replies already flow over the direct session where empty AllowedIPs would
+// drop them.
+func TestProbePeerInitiatedPromotion(t *testing.T) {
+	a, dev, nm, peerPub := testAgent(t)
+	now := time.Now()
+	if err := a.applyNetmap(nm); err != nil {
+		t.Fatal(err)
+	}
+	a.probeStep(now)                                          // candidate 0
+	a.probeStep(now.Add(candidateWindow + time.Second))       // candidate 1
+	a.probeStep(now.Add(2 * (candidateWindow + time.Second))) // exhausted → backoff
+	if ps := a.probes[peerPub]; ps.phase != phaseIdle {
+		t.Fatalf("expected idle backoff: %+v", ps)
+	}
+
+	key, _ := wgkeys.ParsePublic(peerPub)
+	hsAt := now.Add(5 * time.Minute) // deep inside retryAfterFail
+	dev.statuses = []wgdev.PeerStatus{{
+		PublicKey: key, Endpoint: "198.51.100.7:51820", LastHandshake: hsAt,
+	}}
+	a.probeStep(hsAt.Add(probeTick))
+	pc := appliedPeer(t, dev, peerPub)
+	if pc.Endpoint != "198.51.100.7:51820" || len(pc.AllowedIPs) != 1 || pc.AllowedIPs[0].String() != "100.87.0.3/32" {
+		t.Fatalf("peer-initiated handshake must promote: %+v", pc)
+	}
+	if ps := a.probes[peerPub]; ps.phase != phaseDirect {
+		t.Fatalf("probe state after peer-initiated promotion: %+v", ps)
+	}
+}
+
+// Withdrawn candidates mean the coordinator (e.g. the ACL) forced this pair
+// onto the hub relay — a still-live handshake must not resurrect the direct
+// path from idle.
+func TestProbeWithdrawnCandidatesIgnoreHandshake(t *testing.T) {
+	a, dev, nm, peerPub := testAgent(t)
+	now := time.Now()
+	if err := a.applyNetmap(nm); err != nil {
+		t.Fatal(err)
+	}
+	a.probeStep(now) // probing starts
+
+	nm2 := *nm
+	nm2.Peers = append([]api.Peer{}, nm.Peers...)
+	nm2.Peers[1].Candidates = nil
+	if err := a.applyNetmap(&nm2); err != nil {
+		t.Fatal(err)
+	}
+
+	key, _ := wgkeys.ParsePublic(peerPub)
+	dev.statuses = []wgdev.PeerStatus{{
+		PublicKey: key, Endpoint: "198.51.100.7:51820", LastHandshake: now.Add(2 * probeTick),
+	}}
+	a.probeStep(now.Add(3 * probeTick))
+	pc := appliedPeer(t, dev, peerPub)
+	if len(pc.AllowedIPs) != 0 || pc.Endpoint != "" {
+		t.Fatalf("withdrawn peer must stay inert: %+v", pc)
+	}
+}
+
 func TestHubAppliesPeersVerbatim(t *testing.T) {
 	hubKey, _ := wgkeys.Generate()
 	spokeKey, _ := wgkeys.Generate()

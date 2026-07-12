@@ -17,6 +17,13 @@ import (
 // does the peer get its /32 — which then beats the hub's /16 by longest
 // prefix. When the direct path dies, dropping back to empty AllowedIPs
 // restores relaying instantly.
+//
+// Promotion is driven by handshake freshness alone, in any phase: the two
+// sides never flip at the same moment (a rebooted peer probes instantly
+// while we may sit deep in retry backoff), and the side that flips first
+// sends its replies over the direct session — where the laggard's empty
+// AllowedIPs drop them. Treating a fresh incoming handshake as proof of the
+// path closes that asymmetric window from minutes to one probe tick.
 const (
 	probeTick        = 3 * time.Second
 	candidateWindow  = 10 * time.Second // per-candidate handshake budget
@@ -184,7 +191,7 @@ func (a *Agent) probeStep(now time.Time) {
 				a.log.Info("direct path lost — falling back to hub", "peer", ps.hostname)
 			}
 		case phaseProbing:
-			if hs.After(ps.attemptAt) {
+			if now.Sub(hs) < directStaleAfter {
 				ps.phase = phaseDirect
 				ps.confirmedEndpoint = liveEndpoints[key]
 				changed = true
@@ -200,7 +207,17 @@ func (a *Agent) probeStep(now time.Time) {
 				changed = true
 			}
 		case phaseIdle:
-			if len(ps.candidates) > 0 && now.After(ps.nextRetryAt) {
+			switch {
+			case len(ps.candidates) == 0:
+				// Candidates withdrawn (e.g. the ACL forcing this pair onto
+				// the hub) — even a live handshake must not resurrect the
+				// direct path.
+			case now.Sub(hs) < directStaleAfter && liveEndpoints[key] != "":
+				ps.phase = phaseDirect
+				ps.confirmedEndpoint = liveEndpoints[key]
+				changed = true
+				a.log.Info("direct path established (peer-initiated)", "peer", ps.hostname, "endpoint", ps.confirmedEndpoint)
+			case now.After(ps.nextRetryAt):
 				ps.phase = phaseProbing
 				ps.candIdx = 0
 				ps.attemptAt = now
