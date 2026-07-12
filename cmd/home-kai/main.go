@@ -1,8 +1,8 @@
 // home-kai is the admin CLI for the coordinator.
 //
-// Admin commands read the connection settings from env:
-//
-//	KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT
+// Admin commands take the connection settings from the KAI_URL,
+// KAI_ADMIN_TOKEN and KAI_FINGERPRINT env vars, or — when those are unset —
+// from the session saved by `home-kai login` (~/.config/kai/admin.json).
 //
 // `home-kai status` / `home-kai ping` talk to the local kai-agent unix socket instead
 // and need no credentials. Run home-kai without arguments for the command list.
@@ -50,6 +50,10 @@ func main() {
 		cmdPing(ctx, os.Args[2:])
 	case os.Args[1] == "lock":
 		cmdLock(ctx, os.Args[2:])
+	case os.Args[1] == "login":
+		cmdLogin(ctx, os.Args[2:])
+	case os.Args[1] == "logout":
+		cmdLogout()
 	default:
 		usage()
 	}
@@ -78,8 +82,11 @@ func usage() {
   home-kai status                # local agent view: peers, direct/relay, traffic
   home-kai ping <name|ip>        # resolve device name, ping, show path
   home-kai lock init|sign|status|disable [--key FILE]   # network lock (signed peer bindings)
+  home-kai login --url URL --fingerprint HEX   # save admin credentials (token asked on stdin)
+  home-kai logout                # forget saved credentials
 
-admin commands need env: KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT;
+admin commands use KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT env vars,
+or the session saved by "home-kai login" when they are unset;
 status/ping talk to the local kai-agent socket instead.`)
 	os.Exit(2)
 }
@@ -88,8 +95,13 @@ func client() *apiclient.Client {
 	url := os.Getenv("KAI_URL")
 	token := os.Getenv("KAI_ADMIN_TOKEN")
 	fp := os.Getenv("KAI_FINGERPRINT")
+	if url == "" && token == "" && fp == "" {
+		if cfg, ok := loadAdminConfig(); ok {
+			url, token, fp = cfg.URL, cfg.Token, cfg.Fingerprint
+		}
+	}
 	if url == "" || token == "" || fp == "" {
-		fatal(fmt.Errorf("KAI_URL, KAI_ADMIN_TOKEN and KAI_FINGERPRINT must be set (fingerprint: journalctl -u kai-coordinator | grep fingerprint)"))
+		fatal(fmt.Errorf("run `home-kai login --url URL --fingerprint HEX` once, or set KAI_URL, KAI_ADMIN_TOKEN and KAI_FINGERPRINT (fingerprint: journalctl -u kai-coordinator | grep fingerprint)"))
 	}
 	c, err := apiclient.New(url, fp, token)
 	if err != nil {

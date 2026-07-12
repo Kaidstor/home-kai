@@ -62,29 +62,30 @@ Zero-dependency: три статических Go-бинаря, состояни
 home-kai status                        # пиры: direct/relay, handshake, rx/tx
 home-kai ping nas                      # резолв имени + путь + ping
 
-# админский доступ. Секреты (KAI_URL/KAI_ADMIN_TOKEN/KAI_FINGERPRINT) держим
-# в sec, чтобы admin-токен не светился в env/истории — префикс `sec run --`
-# инъектит их в процесс. Один раз завести: admin-токен с VPS
-#   ssh root@<vps> 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN
-# (KAI_URL/KAI_FINGERPRINT — публичные, тоже кладём в sec для удобства).
-sec run home-kai -- home-kai node list
-sec run home-kai -- home-kai token create --name <имя>   # токен + join-команда
-sec run home-kai -- home-kai node delete <node_id>
-sec run home-kai -- home-kai node routes <node_id> --enable 192.168.1.0/24
-sec run home-kai -- home-kai node approve <node_id>       # peer approval
-sec run home-kai -- home-kai node tag <node_id> --tags web,prod
-sec run home-kai -- home-kai policy create web-ssh --from admin --to web --proto tcp --ports 22
-sec run home-kai -- home-kai peer create iphone [--full]   # QR; --full = exit node
-sec run home-kai -- home-kai peer tag <peer_id> --tags phones   # теги для ACL (home-kai peer list — id)
-sec run home-kai -- home-kai events                        # журнал
+# админский доступ: один раз залогиниться — токен спрашивается интерактивно
+# (не эхается и не попадает в историю), проверяется о координатор и
+# сохраняется в ~/.config/kai/admin.json (0600). Отпечаток печатает
+# координатор на старте (journalctl -u kai-coordinator | grep fingerprint).
+home-kai login --url https://vpn.example.com:8443 --fingerprint <sha256>
+home-kai node list
+home-kai token create --name <имя>          # токен + join-команда
+home-kai node delete <node_id>
+home-kai node routes <node_id> --enable 192.168.1.0/24
+home-kai node approve <node_id>             # peer approval
+home-kai node tag <node_id> --tags web,prod
+home-kai policy create web-ssh --from admin --to web --proto tcp --ports 22
+home-kai peer create iphone [--full]        # QR; --full = exit node
+home-kai peer tag <peer_id> --tags phones   # теги для ACL (home-kai peer list — id)
+home-kai events                             # журнал
 home-kai lock init && home-kai lock sign    # network lock (ed25519-ключ остаётся на этой машине)
+home-kai logout                             # забыть сохранённые креды
 
 # подключение нового узла (Linux/macOS, root)
 sudo kai-agent up --coordinator https://vpn.example.com:8443 --token ... --fingerprint ...
 # полезные флаги: --advertise-routes CIDR,CIDR  --rekey-days N  --no-hosts
 ```
 
-> Без sec можно по-старому — `export KAI_URL/KAI_ADMIN_TOKEN/KAI_FINGERPRINT` и вызывать `home-kai` напрямую; sec лишь держит admin-токен вне окружения и истории. Все три переменные обязательны: без отпечатка CLI не подключится (TLS-пиннинг не отключается).
+> Env-переменные `KAI_URL`/`KAI_ADMIN_TOKEN`/`KAI_FINGERPRINT` имеют приоритет над сохранённой сессией — удобно для CI и секрет-менеджеров (например, sec: `sec run home-kai -- home-kai node list` — токен не попадает в env шелла и историю; завести: `ssh root@<vps> 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN`). Частично заданный env не смешивается с файлом: либо все три переменные, либо сессия из `home-kai login`. Отпечаток обязателен всегда — TLS-пиннинг не отключается.
 
 ## Разработка
 
