@@ -48,6 +48,8 @@ func main() {
 		cmdStatus(ctx)
 	case os.Args[1] == "ping":
 		cmdPing(ctx, os.Args[2:])
+	case os.Args[1] == "agent":
+		cmdAgent(ctx, os.Args[2:])
 	case os.Args[1] == "lock":
 		cmdLock(ctx, os.Args[2:])
 	case os.Args[1] == "login":
@@ -81,6 +83,7 @@ func usage() {
   home-kai peer tag <peer_id> --tags a,b
   home-kai status                # local agent view: peers, direct/relay, traffic
   home-kai ping <name|ip>        # resolve device name, ping, show path
+  home-kai agent up|down|status  # start/stop the local kai-agent service (launchd/systemd, sudo)
   home-kai lock init|sign|status|disable [--key FILE]   # network lock (signed peer bindings)
   home-kai login --url URL --fingerprint HEX   # save admin credentials (token asked on stdin)
   home-kai logout                # forget saved credentials

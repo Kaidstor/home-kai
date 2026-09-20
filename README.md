@@ -61,6 +61,8 @@ Zero-dependency: три статических Go-бинаря, состояни
 # сокет 0660 root:kai — либо sudo, либо groupadd kai && usermod -aG kai $USER)
 home-kai status                        # пиры: direct/relay, handshake, rx/tx
 home-kai ping nas                      # резолв имени + путь + ping
+home-kai agent down                    # выключить локальный kai-agent (launchd/systemd, спросит sudo);
+home-kai agent up|status               # например, чтобы пустить 100.87/16 через другой туннель
 
 # админский доступ: один раз залогиниться — токен спрашивается интерактивно
 # (не эхается и не попадает в историю), проверяется о координатор и
