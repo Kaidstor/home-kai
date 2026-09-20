@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // `home-kai agent up|down|status` drives the local kai-agent service so the
@@ -33,11 +34,19 @@ func cmdAgent(ctx context.Context, args []string) {
 		if err := svc.stop(); err != nil {
 			fatal(err)
 		}
+		// bootout / systemctl stop return before the job is gone; without the
+		// wait a chained `agent status` still sees the service loaded.
+		if !waitFor(10*time.Second, func() bool { r, _ := svc.running(); return !r }) {
+			fatal(errors.New("kai-agent is still loaded after 10s"))
+		}
 		fmt.Println("kai-agent stopped; `home-kai agent up` brings it back")
 	case "up", "start":
 		requireRoot()
 		if err := svc.start(); err != nil {
 			fatal(err)
+		}
+		if !waitFor(10*time.Second, func() bool { _, err := localStatus(ctx); return err == nil }) {
+			fatal(errors.New("kai-agent started but its local socket did not come up in 10s"))
 		}
 		fmt.Println("kai-agent started")
 	default:
@@ -161,6 +170,19 @@ func detectLaunchd() (agentService, error) {
 		return launchdService{label: m[1], plist: path}, nil
 	}
 	return nil, errors.New("no kai-agent plist found in /Library/LaunchDaemons")
+}
+
+func waitFor(timeout time.Duration, ok func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if ok() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func run(name string, args ...string) error {
