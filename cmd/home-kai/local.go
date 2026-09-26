@@ -1,19 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/kaidstor/home-kai/internal/api"
+	"github.com/kaidstor/home-kai/internal/exit"
+	"github.com/kaidstor/home-kai/internal/output"
 )
 
 // localClient talks to the agent's unix socket — no env/tokens needed.
@@ -37,80 +40,122 @@ func localStatus(ctx context.Context) (api.LocalStatus, error) {
 	}
 	resp, err := localClient().Do(req)
 	if err != nil {
-		return st, fmt.Errorf("is kai-agent running? %w", err)
+		return st, localErr(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("agent local api: %s", resp.Status)
+		return st, fmt.Errorf("локальный API агента: %s", resp.Status)
 	}
 	return st, json.NewDecoder(resp.Body).Decode(&st)
 }
 
-func cmdStatus(ctx context.Context) {
+func cmdStatus(ctx context.Context, p *output.Printer, args []string) int {
+	if _, code, ok := parse(p, "status", "status", newFlagSet("status"), args, 0); !ok {
+		return code
+	}
 	st, err := localStatus(ctx)
 	if err != nil {
-		fatal(err)
+		return fail(p, "status", err)
 	}
-	fmt.Printf("%s (%s), role %s, agent %s, netmap v%d\ncoordinator: %s\n\n",
-		st.Hostname, st.OverlayIP, st.Role, st.AgentVersion, st.NetmapVersion, st.CoordinatorURL)
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PEER\tIP\tPATH\tENDPOINT\tHANDSHAKE\tRX\tTX")
-	for _, p := range st.Peers {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			p.Hostname, p.OverlayIP, p.Path, p.Endpoint,
-			handshakeAge(p.LastHandshakeAgeSec), fmtBytes(p.RxBytes), fmtBytes(p.TxBytes))
+	return p.Result("status", exit.OK, st, func(w io.Writer) {
+		fmt.Fprintf(w, "%s (%s), роль %s, агент %s, netmap v%d\nкоординатор: %s\n\n",
+			st.Hostname, st.OverlayIP, st.Role, st.AgentVersion, st.NetmapVersion, st.CoordinatorURL)
+		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "PEER\tIP\tPATH\tENDPOINT\tHANDSHAKE\tRX\tTX")
+		for _, peer := range st.Peers {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				peer.Hostname, peer.OverlayIP, peer.Path, peer.Endpoint,
+				handshakeAge(peer.LastHandshakeAgeSec), fmtBytes(peer.RxBytes), fmtBytes(peer.TxBytes))
+		}
+		tw.Flush()
+	})
+}
+
+type pingData struct {
+	Target   string `json:"target"`
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	OK       bool   `json:"ok"`
+	Output   string `json:"output,omitempty"`
+}
+
+// resolveDevice maps a device name to its overlay IP via the agent's host
+// list, then its peers; an IP is returned as-is.
+func resolveDevice(st api.LocalStatus, target string) string {
+	if _, err := netip.ParseAddr(target); err == nil {
+		return target
 	}
-	w.Flush()
+	for _, h := range st.Hosts {
+		if h.Name == target || strings.TrimSuffix(h.Name, api.HostsSuffix) == target {
+			return h.IP
+		}
+	}
+	for _, peer := range st.Peers {
+		if peer.Hostname == target {
+			return peer.OverlayIP
+		}
+	}
+	return ""
 }
 
 // cmdPing resolves a device name via the agent's host list, runs the system
 // ping and reports which path the traffic takes.
-func cmdPing(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
+func cmdPing(ctx context.Context, p *output.Printer, args []string) int {
+	pos, code, ok := parse(p, "ping", "ping <имя|ip>", newFlagSet("ping"), args, 1)
+	if !ok {
+		return code
 	}
-	target := args[0]
+	target := pos[0]
 	st, err := localStatus(ctx)
 	if err != nil {
-		fatal(err)
+		return fail(p, "ping", err)
+	}
+	ip := resolveDevice(st, target)
+	if ip == "" {
+		return p.Fail("ping", exit.NotFound, "not_found",
+			"устройство %q не найдено среди пиров агента (список: home-kai status)", target)
 	}
 
-	ip := target
-	if _, err := netip.ParseAddr(target); err != nil {
-		ip = ""
-		for _, h := range st.Hosts {
-			if h.Name == target || strings.TrimSuffix(h.Name, api.HostsSuffix) == target {
-				ip = h.IP
-				break
-			}
+	data := pingData{Target: target, IP: ip}
+	for _, peer := range st.Peers {
+		if peer.OverlayIP == ip {
+			data.Hostname, data.Path, data.Endpoint = peer.Hostname, peer.Path, peer.Endpoint
+			break
 		}
-		if ip == "" {
-			for _, p := range st.Peers {
-				if p.Hostname == target {
-					ip = p.OverlayIP
-					break
-				}
-			}
+	}
+	if !p.JSON && data.Path != "" {
+		path := data.Path
+		if data.Endpoint != "" {
+			path += " через " + data.Endpoint
 		}
-		if ip == "" {
-			fatal(fmt.Errorf("unknown device %q (try `home-kai status`)", target))
-		}
+		fmt.Fprintf(p.Out, "%s (%s): путь %s\n", data.Hostname, ip, path)
 	}
 
-	for _, p := range st.Peers {
-		if p.OverlayIP == ip {
-			path := p.Path
-			if p.Endpoint != "" {
-				path += " via " + p.Endpoint
-			}
-			fmt.Printf("%s (%s): path %s\n", p.Hostname, ip, path)
-		}
-	}
 	cmd := exec.CommandContext(ctx, "ping", "-c", "3", ip)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		os.Exit(1)
+	var buf bytes.Buffer
+	if p.JSON {
+		cmd.Stdout, cmd.Stderr = &buf, &buf
+	} else {
+		cmd.Stdout, cmd.Stderr = p.Out, p.Err
 	}
+	runErr := cmd.Run()
+	data.OK = runErr == nil
+	data.Output = strings.TrimSpace(buf.String())
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return fail(p, "ping", ctx.Err())
+		}
+		if _, isExit := runErr.(*exec.ExitError); !isExit {
+			return p.Fail("ping", exit.Tool, "usage", "ping: %s", runErr)
+		}
+		if p.JSON {
+			return p.Result("ping", exit.NotApplied, data, nil)
+		}
+		return p.Fail("ping", exit.NotApplied, "unreachable", "%s (%s) не ответил на ping", target, ip)
+	}
+	return p.Result("ping", exit.OK, data, nil)
 }
 
 func handshakeAge(sec int64) string {

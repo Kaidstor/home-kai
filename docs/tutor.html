@@ -152,7 +152,7 @@ systemctl enable --now kai-coordinator
 journalctl -u kai-coordinator | grep fingerprint   # отпечаток — понадобится всем агентам
 
 # 3. хаб — это тоже агент на том же VPS
-home-kai token create --name vps-hub          # env: KAI_URL / KAI_ADMIN_TOKEN / KAI_FINGERPRINT
+home-kai token create --name vps-hub          # нужен home-kai login или env KAI_*
 kai-agent up --coordinator https://127.0.0.1:8443 --token ... --fingerprint ... --hub
 # ^ после первого enroll достаточно: systemctl enable --now kai-agent</code></pre>
 
@@ -205,10 +205,17 @@ LE тут не годится: его отпечаток менялся бы к�
 
 <h3>CLI</h3>
 <p><code>home-kai status</code> и <code>home-kai ping</code> работают на любом узле без токенов — через unix socket
-локального агента. Остальным командам нужно окружение:</p>
-<pre><code>export KAI_URL=https://vpn.example.com:8443
-export KAI_ADMIN_TOKEN=...     # /root/kai-admin-token.txt на VPS
-export KAI_FINGERPRINT=...     # из лога координатора</code></pre>
+локального агента. Остальным нужны адрес, отпечаток и admin-токен. Удобнее всего — токен в sec
+и один раз <code>home-kai login</code>: настройки лягут в <code>~/.config/kai/admin.json</code>, а токен
+останется в sec (поле <code>token_ref</code>). Переменные окружения главнее файла.</p>
+<pre><code>ssh root@&lt;vps&gt; 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN --stdin
+home-kai login --url https://vpn.example.com:8443 --fingerprint &lt;sha256&gt; --token-ref home-kai/KAI_ADMIN_TOKEN
+home-kai doctor                # откуда настройки, какой токен подставился, отвечает ли координатор
+
+# или окружением: KAI_URL, KAI_FINGERPRINT и KAI_ADMIN_TOKEN (либо KAI_TOKEN_REF)</code></pre>
+<p>Вывод по умолчанию текстовый; <code>--json</code> на любой команде отдаёт JSON-конверт
+<code>{v, command, exit, data, warning, error}</code>. Коды выхода: 0 — сделано, 1 — ответ есть, результата нет,
+2 — аргументы/настройки/токен, 3 — не найдено, 4 — координатор не ответил в срок.</p>
 
 <table>
 <tr><th>Команда</th><th>Что делает</th></tr>

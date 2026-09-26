@@ -64,11 +64,12 @@ home-kai ping nas                      # резолв имени + путь + pi
 home-kai agent down                    # выключить локальный kai-agent (launchd/systemd, спросит sudo);
 home-kai agent up|status               # например, чтобы пустить 100.87/16 через другой туннель
 
-# админский доступ: один раз залогиниться — токен спрашивается интерактивно
-# (не эхается и не попадает в историю), проверяется о координатор и
-# сохраняется в ~/.config/kai/admin.json (0600). Отпечаток печатает
-# координатор на старте (journalctl -u kai-coordinator | grep fingerprint).
-home-kai login --url https://vpn.example.com:8443 --fingerprint <sha256>
+# админский доступ: токен лежит в sec, login проверяет его о координатор и
+# сохраняет url, отпечаток и ссылку token_ref в ~/.config/kai/admin.json (0600),
+# сам токен в файл не попадает. Отпечаток печатает координатор на старте
+# (journalctl -u kai-coordinator | grep fingerprint).
+home-kai login --url https://vpn.example.com:8443 --fingerprint <sha256> --token-ref home-kai/KAI_ADMIN_TOKEN
+home-kai doctor                             # настройки, источник токена (маской), доступ к координатору
 home-kai node list
 home-kai token create --name <имя>          # токен + join-команда
 home-kai node delete <node_id>
@@ -87,7 +88,9 @@ sudo kai-agent up --coordinator https://vpn.example.com:8443 --token ... --finge
 # полезные флаги: --advertise-routes CIDR,CIDR  --rekey-days N  --no-hosts
 ```
 
-> Env-переменные `KAI_URL`/`KAI_ADMIN_TOKEN`/`KAI_FINGERPRINT` имеют приоритет над сохранённой сессией — удобно для CI и секрет-менеджеров (например, sec: `sec run home-kai -- home-kai node list` — токен не попадает в env шелла и историю; завести: `ssh root@<vps> 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN`). Частично заданный env не смешивается с файлом: либо все три переменные, либо сессия из `home-kai login`. Отпечаток обязателен всегда — TLS-пиннинг не отключается.
+> Завести токен в sec: `ssh root@<vps> 'awk "/admin token:/ {print \$3}" /root/kai-admin-token.txt' | sec set home-kai/KAI_ADMIN_TOKEN --stdin`. Токен ищется по порядку: `$KAI_ADMIN_TOKEN` → `sec get <token_ref>` → поле `token` в `admin.json` (так сохранял старый `home-kai login` без `--token-ref`; `doctor` о нём предупреждает). Переменные `KAI_URL`, `KAI_FINGERPRINT`, `KAI_TOKEN_REF` перекрывают поля файла по одному, путь к файлу меняет `$HOME_KAI_CONFIG`. Отпечаток обязателен всегда — TLS-пиннинг не отключается, поэтому токен не уйдёт на чужой адрес.
+>
+> Вывод по умолчанию текстовый; `--json` на любой команде отдаёт конверт `{v, command, exit, data, warning, error}` в stdout, отказы тоже. Коды выхода: 0 — сделано, 1 — ответ есть, результата нет (ping без ответов, служба не поднялась, lock не инициализирован), 2 — аргументы, настройки или токен, 3 — не найдено, 4 — координатор не ответил в срок.
 
 ## Разработка
 

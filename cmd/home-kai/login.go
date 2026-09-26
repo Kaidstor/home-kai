@@ -3,111 +3,133 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
-	"net/http"
+	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
 
 	"github.com/kaidstor/home-kai/internal/apiclient"
+	"github.com/kaidstor/home-kai/internal/exit"
+	"github.com/kaidstor/home-kai/internal/output"
 )
 
-// adminConfig is the saved admin session (`home-kai login`). The token is
-// stored in plaintext, so the file lives next to lock.key with 0600 perms —
-// same trust level as the network-lock private key.
-type adminConfig struct {
+const loginSynopsis = "login --url URL --fingerprint HEX [--token-ref <проект>/<KEY>]"
+
+type loginData struct {
+	Path        string `json:"path"`
 	URL         string `json:"url"`
 	Fingerprint string `json:"fingerprint"`
-	Token       string `json:"token"`
-}
-
-func adminConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "kai-admin.json"
-	}
-	return filepath.Join(home, ".config", "kai", "admin.json")
-}
-
-func loadAdminConfig() (adminConfig, bool) {
-	var cfg adminConfig
-	b, err := os.ReadFile(adminConfigPath())
-	if err != nil || json.Unmarshal(b, &cfg) != nil {
-		return adminConfig{}, false
-	}
-	return cfg, cfg.URL != "" && cfg.Fingerprint != "" && cfg.Token != ""
+	TokenSource string `json:"token_source"`
+	TokenMask   string `json:"token_mask"`
 }
 
 // cmdLogin verifies the credentials against the coordinator and only then
 // saves them, so a typo'd token or fingerprint never ends up on disk.
-func cmdLogin(ctx context.Context, args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	url := fs.String("url", "", "coordinator url (https://host:8443)")
-	fp := fs.String("fingerprint", "", "coordinator TLS cert sha256 (64 hex chars)")
-	_ = fs.Parse(args)
+func cmdLogin(ctx context.Context, p *output.Printer, args []string) int {
+	const command = "login"
+	fs := newFlagSet(command)
+	url := fs.String("url", "", "")
+	fp := fs.String("fingerprint", "", "")
+	ref := fs.String("token-ref", "", "")
+	if _, code, ok := parse(p, command, loginSynopsis, fs, args, 0); !ok {
+		return code
+	}
 	if *url == "" || *fp == "" {
-		fatal(fmt.Errorf("login needs --url and --fingerprint (fingerprint: journalctl -u kai-coordinator | grep fingerprint)"))
+		return p.Fail(command, exit.Tool, "usage",
+			"нужны --url и --fingerprint (отпечаток: journalctl -u kai-coordinator | grep fingerprint); использование: home-kai %s", loginSynopsis)
 	}
-	token, err := readTokenStdin()
+
+	var tok token
+	if *ref != "" {
+		v, err := secGet(*ref)
+		if err != nil {
+			return p.Fail(command, exit.Tool, "auth", "sec get %s: %s", *ref, err)
+		}
+		if v == "" {
+			return p.Fail(command, exit.Tool, "auth", "sec get %s: пустое значение", *ref)
+		}
+		tok = token{Value: v, Source: "sec:" + *ref}
+	} else {
+		v, err := readTokenStdin()
+		if err != nil {
+			return p.Fail(command, exit.Tool, "usage", "%s", err)
+		}
+		tok = token{Value: v, Source: "stdin"}
+	}
+
+	c, err := apiclient.New(*url, *fp, tok.Value)
 	if err != nil {
-		fatal(err)
+		return p.Fail(command, exit.Tool, "config", "%s", err)
 	}
-	c, err := apiclient.New(*url, *fp, token)
-	if err != nil {
-		fatal(err)
+	if err := (admin{c: c}).get(ctx, "/v1/admin/nodes", nil); err != nil {
+		return fail(p, command, fmt.Errorf("проверка доступа не прошла: %w", err))
 	}
-	if _, err := c.Do(ctx, http.MethodGet, "/v1/admin/nodes", nil, nil); err != nil {
-		fatal(fmt.Errorf("credentials check failed: %w", err))
-	}
+
 	path := adminConfigPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		fatal(err)
+	cfg := adminConfig{URL: *url, Fingerprint: *fp, TokenRef: *ref}
+	if *ref == "" {
+		cfg.Token = tok.Value
+		p.Warn("токен сохранён в %s открытым текстом; лучше положить его в sec и перелогиниться с --token-ref", path)
 	}
-	b, _ := json.MarshalIndent(adminConfig{URL: *url, Fingerprint: *fp, Token: token}, "", "  ")
-	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
-		fatal(err)
+	if err := saveAdminConfig(path, cfg); err != nil {
+		return p.Fail(command, exit.Tool, "config", "%s", err)
 	}
-	fmt.Println("logged in, credentials saved to", path, "(0600; KAI_* env still overrides)")
+	source := tok.Source
+	if *ref == "" {
+		source = "file:" + path
+	}
+	data := loginData{Path: path, URL: *url, Fingerprint: *fp, TokenSource: source, TokenMask: mask(tok.Value)}
+	return p.Result(command, exit.OK, data, func(w io.Writer) {
+		fmt.Fprintf(w, "доступ проверен, настройки сохранены в %s (0600); токен: %s; переменные KAI_* главнее файла\n",
+			path, data.TokenSource)
+	})
 }
 
-func cmdLogout() {
-	path := adminConfigPath()
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("not logged in (no", path+")")
-			return
-		}
-		fatal(err)
+func cmdLogout(p *output.Printer, args []string) int {
+	const command = "logout"
+	if _, code, ok := parse(p, command, command, newFlagSet(command), args, 0); !ok {
+		return code
 	}
-	fmt.Println("removed", path)
+	path := adminConfigPath()
+	err := os.Remove(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return p.Result(command, exit.OK, map[string]any{"path": path, "removed": false}, func(w io.Writer) {
+			fmt.Fprintf(w, "не залогинен (нет %s)\n", path)
+		})
+	case err != nil:
+		return p.Fail(command, exit.Tool, "config", "%s", err)
+	}
+	return p.Result(command, exit.OK, map[string]any{"path": path, "removed": true}, func(w io.Writer) {
+		fmt.Fprintln(w, "удалён", path)
+	})
 }
 
 // readTokenStdin asks for the admin token without echoing it on a terminal;
 // a piped stdin (e.g. `ssh vps 'awk ...' | home-kai login ...`) is read as-is.
 func readTokenStdin() (string, error) {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprint(os.Stderr, "admin token: ")
+		fmt.Fprint(os.Stderr, "admin-токен: ")
 		b, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)
 		if err != nil {
 			return "", err
 		}
 		if len(b) == 0 {
-			return "", fmt.Errorf("empty token")
+			return "", fmt.Errorf("пустой токен")
 		}
 		return strings.TrimSpace(string(b)), nil
 	}
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
-		return "", fmt.Errorf("reading token from stdin: %w", err)
+		return "", fmt.Errorf("токен из stdin не прочитан: %w", err)
 	}
 	token := strings.TrimSpace(line)
 	if token == "" {
-		return "", fmt.Errorf("empty token")
+		return "", fmt.Errorf("пустой токен")
 	}
 	return token, nil
 }

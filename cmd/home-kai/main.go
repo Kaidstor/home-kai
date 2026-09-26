@@ -1,119 +1,155 @@
 // home-kai is the admin CLI for the coordinator.
 //
-// Admin commands take the connection settings from the KAI_URL,
-// KAI_ADMIN_TOKEN and KAI_FINGERPRINT env vars, or — when those are unset —
-// from the session saved by `home-kai login` (~/.config/kai/admin.json).
-//
-// `home-kai status` / `home-kai ping` talk to the local kai-agent unix socket instead
-// and need no credentials. Run home-kai without arguments for the command list.
+// Admin commands talk to the coordinator admin API with the settings from
+// ~/.config/kai/admin.json (`home-kai login`) overlaid by KAI_* env vars; the
+// token comes from $KAI_ADMIN_TOKEN, sec (token_ref) or, legacy, the file.
+// `status`, `ping` and `agent` talk to the local kai-agent instead and need
+// no credentials. Output is text by default, the kai CLI envelope with --json
+// (internal/output), exit codes are in internal/exit.
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/kaidstor/home-kai/internal/apiclient"
+	"github.com/kaidstor/home-kai/internal/exit"
+	"github.com/kaidstor/home-kai/internal/output"
 )
 
+// commandTimeout bounds a whole command; the API client alone waits up to
+// 70s per request.
+const commandTimeout = 2 * time.Minute
+
+const usage = `home-kai — админский CLI оверлей-сети home-kai: координатор и локальный kai-agent
+
+Использование:
+  home-kai <команда> [аргументы] [--json]
+
+Сеть (admin API координатора, нужен токен):
+  token create [--name <имя>] [--ttl <сек>]    одноразовый enroll-токен и готовая join-команда
+                                               (ttl по умолчанию 3600)
+  node list                                    узлы: id, имя, роль, ОС, overlay-IP, DNS, последний контакт
+  node delete <node_id>
+  node routes <node_id> --enable <CIDR,CIDR>   включить подсети из анонсированных узлом;
+                                               --enable "" выключает все
+  node approve <node_id>                       одобрить узел (при require_approval = true)
+  node tag <node_id> --tags <a,b>              теги для ACL; пустое значение очищает
+  peer create <имя> [--png <файл>] [--full]    static peer (телефон, роутер): конфиг WireGuard и QR;
+                                               --full — весь трафик через хаб
+  peer list
+  peer tag <peer_id> --tags <a,b>
+  policy list
+  policy create <имя> [--from <теги>] [--to <теги>] [--proto any|tcp|udp|icmp] [--ports <22,443>] [--disabled]
+                                               пустые --from/--to — любой узел
+  policy delete <id>
+  events [--limit <N>]                         журнал координатора (по умолчанию 50 последних)
+  lock init|sign|status|disable [--key <файл>] network lock: подписанные привязки пиров;
+                                               ключ по умолчанию ~/.config/kai/lock.key
+
+Эта машина (сокет kai-agent, токен не нужен):
+  status                                       пиры, путь direct/relay, handshake, трафик
+  ping <имя|ip>                                резолв имени, путь до пира и три пинга
+  agent up|down|status                         запуск и остановка службы kai-agent
+                                               (launchd/systemd; up и down перезапускаются через sudo)
+
+Служебное:
+  login --url <URL> --fingerprint <HEX> [--token-ref <проект>/<KEY>]
+                                               проверить доступ к координатору и сохранить настройки;
+                                               без --token-ref токен читается из stdin и ложится
+                                               в файл открытым текстом
+  logout                                       удалить файл настроек
+  doctor                                       настройки, источник токена, доступ к координатору
+
+Настройки — ~/.config/kai/admin.json (url, fingerprint, token_ref), путь меняет $HOME_KAI_CONFIG,
+поверх файла — переменные KAI_URL, KAI_FINGERPRINT, KAI_TOKEN_REF. Токен ищется по порядку:
+$KAI_ADMIN_TOKEN, sec get <token_ref>, поле token в файле (устаревшее, doctor о нём предупреждает).
+В argv токен не попадает. Отпечаток TLS обязателен: journalctl -u kai-coordinator | grep fingerprint.
+
+Общие флаги:
+  --json                                       JSON-конверт {v, command, exit, data, warning, error}
+                                               в stdout, отказы тоже
+  --human                                      текст (по умолчанию)
+  -h, --help                                   справка
+
+Коды выхода:
+  0 сделано
+  1 ответ есть, результата нет: ping без ответов, служба kai-agent не поднялась или не
+    остановилась, network lock не инициализирован
+  2 ошибка инструмента, аргументов, настроек или токена
+  3 не найдено: узел, пир, политика, устройство, служба kai-agent
+  4 координатор не ответил в срок; читающие команды можно повторить, изменяющие — сначала
+    сверить результат списком`
+
 func main() {
-	if len(os.Args) < 2 {
-		usage()
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	jsonMode, args := splitGlobalFlags(args)
+
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(usage)
+		return exit.OK
 	}
-	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+
+	p := output.New(jsonMode)
+	name, rest := args[0], args[1:]
+	sub := ""
+	if len(rest) > 0 {
+		sub = rest[0]
+	}
+
 	switch {
-	case os.Args[1] == "token" && arg(2) == "create":
-		cmdTokenCreate(ctx, os.Args[3:])
-	case os.Args[1] == "node" && arg(2) == "list":
-		cmdNodeList(ctx)
-	case os.Args[1] == "node" && arg(2) == "delete":
-		cmdNodeDelete(ctx, os.Args[3:])
-	case os.Args[1] == "node" && arg(2) == "routes":
-		cmdNodeRoutes(ctx, os.Args[3:])
-	case os.Args[1] == "node" && arg(2) == "approve":
-		cmdNodeApprove(ctx, os.Args[3:])
-	case os.Args[1] == "node" && arg(2) == "tag":
-		cmdNodeTag(ctx, os.Args[3:])
-	case os.Args[1] == "policy":
-		cmdPolicy(ctx, os.Args[2:])
-	case os.Args[1] == "events":
-		cmdEvents(ctx, os.Args[2:])
-	case os.Args[1] == "peer" && arg(2) == "create":
-		cmdPeerCreate(ctx, os.Args[3:])
-	case os.Args[1] == "peer" && arg(2) == "list":
-		cmdPeerList(ctx)
-	case os.Args[1] == "peer" && arg(2) == "tag":
-		cmdPeerTag(ctx, os.Args[3:])
-	case os.Args[1] == "status":
-		cmdStatus(ctx)
-	case os.Args[1] == "ping":
-		cmdPing(ctx, os.Args[2:])
-	case os.Args[1] == "agent":
-		cmdAgent(ctx, os.Args[2:])
-	case os.Args[1] == "lock":
-		cmdLock(ctx, os.Args[2:])
-	case os.Args[1] == "login":
-		cmdLogin(ctx, os.Args[2:])
-	case os.Args[1] == "logout":
-		cmdLogout()
+	case name == "token" && sub == "create":
+		return cmdTokenCreate(ctx, p, rest[1:])
+	case name == "node" && sub == "list":
+		return cmdNodeList(ctx, p, rest[1:])
+	case name == "node" && sub == "delete":
+		return cmdNodeDelete(ctx, p, rest[1:])
+	case name == "node" && sub == "routes":
+		return cmdNodeRoutes(ctx, p, rest[1:])
+	case name == "node" && sub == "approve":
+		return cmdNodeApprove(ctx, p, rest[1:])
+	case name == "node" && sub == "tag":
+		return cmdNodeTag(ctx, p, rest[1:])
+	case name == "policy":
+		return cmdPolicy(ctx, p, rest)
+	case name == "events":
+		return cmdEvents(ctx, p, rest)
+	case name == "peer" && sub == "create":
+		return cmdPeerCreate(ctx, p, rest[1:])
+	case name == "peer" && sub == "list":
+		return cmdPeerList(ctx, p, rest[1:])
+	case name == "peer" && sub == "tag":
+		return cmdPeerTag(ctx, p, rest[1:])
+	case name == "status":
+		return cmdStatus(ctx, p, rest)
+	case name == "ping":
+		return cmdPing(ctx, p, rest)
+	case name == "agent":
+		return cmdAgent(ctx, p, rest)
+	case name == "lock":
+		return cmdLock(ctx, p, rest)
+	case name == "login":
+		return cmdLogin(ctx, p, rest)
+	case name == "logout":
+		return cmdLogout(p, rest)
+	case name == "doctor":
+		return cmdDoctor(ctx, p, rest)
+	case name == "token" || name == "node" || name == "peer":
+		return p.Fail(name, exit.Tool, "usage",
+			"неизвестная подкоманда %q; home-kai --help покажет список", name+" "+sub)
 	default:
-		usage()
+		return p.Fail("", exit.Tool, "usage",
+			"неизвестная команда %q; home-kai --help покажет список", name)
 	}
-}
-
-func arg(i int) string {
-	if len(os.Args) > i {
-		return os.Args[i]
-	}
-	return ""
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, `usage:
-  home-kai token create [--name HINT] [--ttl SECONDS]
-  home-kai node list
-  home-kai node delete <node_id>
-  home-kai node routes <node_id> --enable CIDR,CIDR
-  home-kai node approve <node_id>
-  home-kai node tag <node_id> --tags a,b
-  home-kai policy list|create|delete ...
-  home-kai events [--limit N]
-  home-kai peer create <name> [--png FILE] [--full]
-  home-kai peer list
-  home-kai peer tag <peer_id> --tags a,b
-  home-kai status                # local agent view: peers, direct/relay, traffic
-  home-kai ping <name|ip>        # resolve device name, ping, show path
-  home-kai agent up|down|status  # start/stop the local kai-agent service (launchd/systemd, sudo)
-  home-kai lock init|sign|status|disable [--key FILE]   # network lock (signed peer bindings)
-  home-kai login --url URL --fingerprint HEX   # save admin credentials (token asked on stdin)
-  home-kai logout                # forget saved credentials
-
-admin commands use KAI_URL, KAI_ADMIN_TOKEN, KAI_FINGERPRINT env vars,
-or the session saved by "home-kai login" when they are unset;
-status/ping talk to the local kai-agent socket instead.`)
-	os.Exit(2)
-}
-
-func client() *apiclient.Client {
-	url := os.Getenv("KAI_URL")
-	token := os.Getenv("KAI_ADMIN_TOKEN")
-	fp := os.Getenv("KAI_FINGERPRINT")
-	if url == "" && token == "" && fp == "" {
-		if cfg, ok := loadAdminConfig(); ok {
-			url, token, fp = cfg.URL, cfg.Token, cfg.Fingerprint
-		}
-	}
-	if url == "" || token == "" || fp == "" {
-		fatal(fmt.Errorf("run `home-kai login --url URL --fingerprint HEX` once, or set KAI_URL, KAI_ADMIN_TOKEN and KAI_FINGERPRINT (fingerprint: journalctl -u kai-coordinator | grep fingerprint)"))
-	}
-	c, err := apiclient.New(url, fp, token)
-	if err != nil {
-		fatal(err)
-	}
-	return c
-}
-
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "home-kai:", err)
-	os.Exit(1)
 }

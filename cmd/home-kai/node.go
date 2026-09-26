@@ -2,86 +2,135 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/kaidstor/home-kai/internal/api"
+	"github.com/kaidstor/home-kai/internal/exit"
+	"github.com/kaidstor/home-kai/internal/output"
 	"github.com/kaidstor/home-kai/internal/text"
 )
 
-func cmdNodeList(ctx context.Context) {
-	var nodes []api.NodeInfo
-	_, err := client().Do(ctx, http.MethodGet, "/v1/admin/nodes", nil, &nodes)
-	if err != nil {
-		fatal(err)
+func cmdNodeList(ctx context.Context, p *output.Printer, args []string) int {
+	const command = "node list"
+	if _, code, ok := parse(p, command, command, newFlagSet(command), args, 0); !ok {
+		return code
 	}
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tROLE\tOS\tIP\tDNS\tLAST SEEN")
-	for _, n := range nodes {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			n.NodeID, n.Hostname, n.Role, n.OS, n.OverlayIP, n.DNSName, n.LastSeen.Local().Format("2006-01-02 15:04:05"))
+	a, code, ok := adminClient(p, command)
+	if !ok {
+		return code
 	}
-	w.Flush()
+	nodes := []api.NodeInfo{}
+	if err := a.get(ctx, "/v1/admin/nodes", &nodes); err != nil {
+		return fail(p, command, err)
+	}
+	return p.Result(command, exit.OK, map[string]any{"nodes": nodes}, func(w io.Writer) {
+		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tNAME\tROLE\tOS\tIP\tDNS\tLAST SEEN")
+		for _, n := range nodes {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				n.NodeID, n.Hostname, n.Role, n.OS, n.OverlayIP, n.DNSName, n.LastSeen.Local().Format("2006-01-02 15:04:05"))
+		}
+		tw.Flush()
+	})
 }
 
-func cmdNodeDelete(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
+func cmdNodeDelete(ctx context.Context, p *output.Printer, args []string) int {
+	const command = "node delete"
+	pos, code, ok := parse(p, command, "node delete <node_id>", newFlagSet(command), args, 1)
+	if !ok {
+		return code
 	}
-	_, err := client().Do(ctx, http.MethodDelete, "/v1/admin/nodes/"+args[0], nil, nil)
-	if err != nil {
-		fatal(err)
+	a, code, ok := adminClient(p, command)
+	if !ok {
+		return code
 	}
-	fmt.Println("deleted", args[0])
+	id := pos[0]
+	if err := a.do(ctx, http.MethodDelete, "/v1/admin/nodes/"+id, nil, nil); err != nil {
+		return fail(p, command, err)
+	}
+	return p.Result(command, exit.OK, map[string]any{"node_id": id, "deleted": true}, func(w io.Writer) {
+		fmt.Fprintln(w, "удалён", id)
+	})
 }
 
 // cmdNodeRoutes enables subnet routes advertised by a node:
 //
 //	home-kai node routes <node_id> --enable 192.168.1.0/24,172.18.0.0/16
 //	home-kai node routes <node_id> --enable ""        # disable all
-func cmdNodeRoutes(ctx context.Context, args []string) {
-	if len(args) < 1 || args[0] == "" || args[0][0] == '-' {
-		usage()
+func cmdNodeRoutes(ctx context.Context, p *output.Printer, args []string) int {
+	const command = "node routes"
+	fs := newFlagSet(command)
+	enable := fs.String("enable", "", "")
+	pos, code, ok := parse(p, command, "node routes <node_id> --enable CIDR,CIDR", fs, args, 1)
+	if !ok {
+		return code
 	}
-	id := args[0]
-	fs := flag.NewFlagSet("node routes", flag.ExitOnError)
-	enable := fs.String("enable", "", "comma-separated subset of the node's advertised routes to enable")
-	_ = fs.Parse(args[1:])
-
+	a, code, ok := adminClient(p, command)
+	if !ok {
+		return code
+	}
+	id := pos[0]
 	enabled := text.Fields(*enable)
-	_, err := client().Do(ctx, http.MethodPost, "/v1/admin/nodes/"+id+"/routes",
-		api.NodeRoutesRequest{Enabled: enabled}, nil)
-	if err != nil {
-		fatal(err)
+	if err := a.do(ctx, http.MethodPost, "/v1/admin/nodes/"+id+"/routes",
+		api.NodeRoutesRequest{Enabled: enabled}, nil); err != nil {
+		return fail(p, command, err)
 	}
-	fmt.Printf("enabled routes for %s: %s\n", id, strings.Join(enabled, ", "))
+	if enabled == nil {
+		enabled = []string{}
+	}
+	return p.Result(command, exit.OK, map[string]any{"node_id": id, "enabled": enabled}, func(w io.Writer) {
+		fmt.Fprintf(w, "включённые маршруты %s: %s\n", id, text.JoinOr(enabled, "—"))
+	})
 }
 
-func cmdNodeApprove(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
+func cmdNodeApprove(ctx context.Context, p *output.Printer, args []string) int {
+	const command = "node approve"
+	pos, code, ok := parse(p, command, "node approve <node_id>", newFlagSet(command), args, 1)
+	if !ok {
+		return code
 	}
-	if _, err := client().Do(ctx, http.MethodPost, "/v1/admin/nodes/"+args[0]+"/approve", nil, nil); err != nil {
-		fatal(err)
+	a, code, ok := adminClient(p, command)
+	if !ok {
+		return code
 	}
-	fmt.Println("approved", args[0])
+	id := pos[0]
+	if err := a.do(ctx, http.MethodPost, "/v1/admin/nodes/"+id+"/approve", nil, nil); err != nil {
+		return fail(p, command, err)
+	}
+	return p.Result(command, exit.OK, map[string]any{"node_id": id, "approved": true}, func(w io.Writer) {
+		fmt.Fprintln(w, "одобрен", id)
+	})
 }
 
-func cmdNodeTag(ctx context.Context, args []string) {
-	if len(args) < 1 {
-		usage()
+func cmdNodeTag(ctx context.Context, p *output.Printer, args []string) int {
+	return setTags(ctx, p, args, "node tag", "node tag <node_id> --tags a,b", "/v1/admin/nodes/")
+}
+
+// setTags is the shared body of `node tag` and `peer tag`.
+func setTags(ctx context.Context, p *output.Printer, args []string, command, synopsis, prefix string) int {
+	fs := newFlagSet(command)
+	tagsFlag := fs.String("tags", "", "")
+	pos, code, ok := parse(p, command, synopsis, fs, args, 1)
+	if !ok {
+		return code
 	}
-	id := args[0]
-	fs := flag.NewFlagSet("node tag", flag.ExitOnError)
-	tags := fs.String("tags", "", "comma-separated group tags (empty clears)")
-	_ = fs.Parse(args[1:])
-	if _, err := client().Do(ctx, http.MethodPost, "/v1/admin/nodes/"+id+"/tags",
-		api.TagsRequest{Tags: text.Fields(*tags)}, nil); err != nil {
-		fatal(err)
+	a, code, ok := adminClient(p, command)
+	if !ok {
+		return code
 	}
-	fmt.Printf("tags for %s: %s\n", id, *tags)
+	id := pos[0]
+	tags := text.Fields(*tagsFlag)
+	if err := a.do(ctx, http.MethodPost, prefix+id+"/tags", api.TagsRequest{Tags: tags}, nil); err != nil {
+		return fail(p, command, err)
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	return p.Result(command, exit.OK, map[string]any{"id": id, "tags": tags}, func(w io.Writer) {
+		fmt.Fprintf(w, "теги %s: %s\n", id, strings.Join(tags, ","))
+	})
 }
